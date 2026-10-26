@@ -15,7 +15,7 @@ from typing import List, Optional
 from PySide6.QtCore import (
     Qt, QTimer, Signal, Slot, QPoint, QRectF, QPropertyAnimation, QEasingCurve,
 )
-from PySide6.QtWidgets import QWidget, QApplication
+from PySide6.QtWidgets import QWidget, QApplication, QLabel
 from PySide6.QtGui import (
     QColor, QPainter, QBrush, QPen, QFont, QGuiApplication, QLinearGradient,
     QFontDatabase,
@@ -38,10 +38,10 @@ COLORS = {
     "waveform_dim": "#3D3580",
 }
 FONT_FAMILY = "Inter"
-PILL_RADIUS = 28
-PILL_H = 56
-PILL_W_IDLE = 48
-PILL_W_WIDE = 320
+PILL_RADIUS = 22
+PILL_H = 48
+PILL_W_IDLE = 40
+PILL_W_WIDE = 260
 
 # Win32
 GWL_EXSTYLE = -20
@@ -77,8 +77,8 @@ class RealMicWaveformVisualizer(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(232, 32)
-        self.num_bars = 24
+        self.setFixedSize(160, 24)
+        self.num_bars = 18
         self.levels = [0.02] * self.num_bars
         self._target = [0.02] * self.num_bars
         self._timer = QTimer(self)
@@ -95,9 +95,14 @@ class RealMicWaveformVisualizer(QWidget):
         self.update()
 
     def update_real_audio(self, overall_rms: float, sub_levels=None):
-        if sub_levels and len(sub_levels) == self.num_bars:
+        if sub_levels:
+            # Resample incoming levels to our bar count (audio callback uses 24).
+            src = list(sub_levels)
+            if len(src) != self.num_bars and len(src) > 0:
+                # nearest-neighbour down/up-sample
+                src = [src[int(i * len(src) / self.num_bars)] for i in range(self.num_bars)]
             for i in range(self.num_bars):
-                raw = sub_levels[i]
+                raw = src[i] if i < len(src) else 0.0
                 self._target[i] = max(0.02, min(1.0, raw * 2.2))
         else:
             for i in range(self.num_bars):
@@ -128,7 +133,7 @@ class RealMicWaveformVisualizer(QWidget):
 
         for i in range(self.num_bars):
             lvl = self.levels[i]
-            bar_h = max(4.0, lvl * 28.0)
+            bar_h = max(3.0, lvl * 20.0)
             x = start_x + i * (bar_w + gap)
             y = (h - bar_h) / 2.0
             grad = QLinearGradient(x, y, x, y + bar_h)
@@ -299,6 +304,12 @@ class FloatingPill(QWidget):
         self.shimmer = ShimmerBar(self)
         self.shimmer.hide()
 
+        self._status = QLabel(self)
+        self._status.setStyleSheet(
+            f"color: {COLORS['text_muted']}; font-size: 11px; font-weight: 500;"
+        )
+        self._status.hide()
+
         self._reposition()
 
     def _connect_signals(self):
@@ -384,6 +395,7 @@ class FloatingPill(QWidget):
             self.spinner.stop()
             self.shimmer.hide()
             self.shimmer.stop()
+            self._status.hide()
             self._animate_width(PILL_W_WIDE, 200)
 
         elif state in ("TRANSCRIBING", "CLEANING"):
@@ -396,6 +408,10 @@ class FloatingPill(QWidget):
             self.shimmer.show()
             self.shimmer.start()
             self.shimmer.setFixedWidth(PILL_W_WIDE)
+            label = "Refining\u2026" if self._state == "CLEANING" else "Transcribing\u2026"
+            self._status.setText(label)
+            self._status.show()
+            self._status.move(40, (PILL_H - self._status.sizeHint().height()) // 2)
             self._animate_width(PILL_W_WIDE, 200)
 
         elif state == "SUCCESS":
@@ -408,6 +424,7 @@ class FloatingPill(QWidget):
             self.shimmer.hide()
             self.shimmer.stop()
             self._success = True
+            self._status.hide()
             self._animate_width(PILL_W_IDLE, 150)
             QTimer.singleShot(800, self._fade_to_idle)
 
@@ -421,6 +438,7 @@ class FloatingPill(QWidget):
             self.shimmer.hide()
             self.shimmer.stop()
             self._error = True
+            self._status.hide()
             self._shake_step = 0
             self._shake_timer = QTimer(self)
             self._shake_timer.setInterval(50)
@@ -442,6 +460,7 @@ class FloatingPill(QWidget):
             self.shimmer.stop()
             self._success = False
             self._error = False
+            self._status.hide()
             self._animate_width(PILL_W_IDLE, 150)
             self.hide()
 
@@ -518,7 +537,7 @@ class FloatingPill(QWidget):
             font.setStyleStrategy(QFont.PreferAntialias)
             painter.setFont(font)
             painter.setPen(QColor(COLORS["text_muted"]))
-            painter.drawText(QRectF(w - 52, 0, 48, h), Qt.AlignVCenter | Qt.AlignRight, self._elapsed_text)
+            painter.drawText(QRectF(w - 46, 0, 42, h), Qt.AlignVCenter | Qt.AlignRight, self._elapsed_text)
 
         elif self._state in ("TRANSCRIBING", "CLEANING"):
             # spinner left
