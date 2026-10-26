@@ -19,8 +19,8 @@ import win32con
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
-from overlay import FloatingPill, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOPMOST
-from tray import SystemTrayManager, create_tray_icon_pixmap
+from voxen.overlay import FloatingPill, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOPMOST
+from voxen.tray import SystemTrayManager, create_tray_icon_pixmap
 import inject
 
 

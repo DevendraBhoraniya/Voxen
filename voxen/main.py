@@ -15,7 +15,8 @@ import yaml
 from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
-from audio import (
+from . import config as app_config
+from .audio import (
     AudioRecorder,
     get_default_input_device,
     is_loopback_device,
@@ -23,18 +24,18 @@ from audio import (
     play_sound_cue,
     resolve_input_device,
 )
-from hotkey import HotkeyListener
-from transcribe import (
+from .hotkey import HotkeyListener
+from .transcribe import (
     DEFAULT_CORRECTIONS,
     WhisperTranscriber,
     WhistleTranscriber,
     create_transcriber,
     detect_hardware,
 )
-from cleanup import OllamaCleaner, check_ollama_status
-import inject
-from overlay import FloatingPill
-from tray import SystemTrayManager
+from .cleanup import OllamaCleaner, check_ollama_status
+from . import inject
+from .overlay import FloatingPill
+from .tray import SystemTrayManager
 
 # Configure logging: console plus a rotating file log under
 # %LOCALAPPDATA%\Voxen\logs so a bad take can be diagnosed after the fact
@@ -67,39 +68,6 @@ logging.basicConfig(
     handlers=_handlers,
 )
 logger = logging.getLogger("Voxen.Main")
-
-
-def load_config(config_path: str = "config.yaml") -> Dict:
-    """Load configuration from YAML file with defaults."""
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-                if isinstance(data, dict):
-                    return data
-        except Exception as e:
-            logger.error(f"Error loading {config_path}: {e}")
-    return {}
-
-
-def build_corrections(stt_cfg: Dict):
-    """
-    Merge the built-in vocabulary corrections with user replacements.
-
-    Previously any `replacements:` block in config.yaml replaced the built-in
-    DEFAULT_CORRECTIONS table wholesale, silently losing common fixes
-    (GitHub, PostgreSQL, FastAPI, Voxen, ...).
-    """
-    import re
-
-    merged: Dict[str, str] = dict(DEFAULT_CORRECTIONS)
-    replacements = stt_cfg.get("replacements") or stt_cfg.get("corrections") or {}
-    if isinstance(replacements, dict):
-        for k, v in replacements.items():
-            # (?i) makes user entries case-insensitive as documented in
-            # config.yaml; without it "Voice Bot" was left uncorrected.
-            merged[rf"(?i)\b{re.escape(str(k))}\b"] = str(v)
-    return merged
 
 
 def run_first_run_diagnostics(config: Dict):
@@ -186,7 +154,7 @@ class VoxenApp(QObject):
         prompt = ", ".join(vocab) + "." if vocab else stt_cfg.get("initial_prompt", None)
 
         replacements = stt_cfg.get("replacements") or stt_cfg.get("corrections", None)
-        correction_dict = build_corrections(stt_cfg)
+        correction_dict = app_config.build_corrections(stt_cfg)
 
         self.transcriber = create_transcriber(
             engine=stt_cfg.get("engine", "faster-whisper"),
@@ -292,7 +260,7 @@ class VoxenApp(QObject):
         prompt = ", ".join(vocab) + "." if vocab else stt_cfg.get("initial_prompt", None)
 
         replacements = stt_cfg.get("replacements") or stt_cfg.get("corrections", None)
-        correction_dict = build_corrections(stt_cfg)
+        correction_dict = app_config.build_corrections(stt_cfg)
 
         try:
             if model_key == "whistle":
@@ -516,7 +484,7 @@ def main():
     except Exception:
         pass
 
-    config = load_config("config.yaml")
+    config = app_config.load_config("config.yaml")
     run_first_run_diagnostics(config)
 
     app = QApplication(sys.argv)
@@ -525,7 +493,7 @@ def main():
     app.setOrganizationName("Voxen")
     app.setQuitOnLastWindowClosed(False)
 
-    from tray import create_tray_icon_pixmap
+    from .tray import create_tray_icon_pixmap
     from PySide6.QtGui import QIcon
     app.setWindowIcon(QIcon(create_tray_icon_pixmap(recording=False)))
 

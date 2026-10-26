@@ -30,20 +30,43 @@ A lightweight, fully local Windows equivalent of Wispr Flow. Press **Ctrl+Shift*
 
 ---
 
+## Project Structure
+
+```
+voxen/                  # Application package
+  __init__.py           # Package metadata
+  __main__.py           # `python -m voxen` entry
+  main.py               # Application controller, diagnostics, pipeline
+  config.py             # Config loading + correction merging
+  audio.py              # Device discovery, capture, DSP
+  transcribe.py         # STT engines, VAD, text post-processing
+  cleanup.py            # Optional Ollama refinement
+  inject.py             # Clipboard save/paste/restore
+  hotkey.py             # Global hotkey listener
+  overlay.py            # PySide6 floating pill overlay
+  tray.py               # System tray icon and menu
+tests/                  # Verification scripts
+tools/                  # Benchmarking and diagnostics
+docs/                   # Architecture and design docs
+config.yaml             # Runtime configuration
+pyproject.toml          # Project metadata and dependencies
+```
+
 ## File Architecture
 
 | File | Purpose |
 |---|---|
-| [`main.py`](file:///f:/test/STT/main.py) | Application entrypoint, hardware diagnostics, and thread orchestrator. |
-| [`audio.py`](file:///f:/test/STT/audio.py) | Low-latency audio stream, RMS meter callbacks, and device discovery. |
-| [`hotkey.py`](file:///f:/test/STT/hotkey.py) | Global keyboard hook (`pynput`) supporting `Ctrl+Shift` with debounce. |
-| [`transcribe.py`](file:///f:/test/STT/transcribe.py) | Local `faster-whisper` engine, VAD filter, silence handling, and CPU/CUDA auto-selection. |
-| [`cleanup.py`](file:///f:/test/STT/cleanup.py) | Ollama localhost API client with anti-hallucination guardrails. |
-| [`inject.py`](file:///f:/test/STT/inject.py) | Safe Windows clipboard save/paste/restore injection. |
-| [`overlay.py`](file:///f:/test/STT/overlay.py) | PySide6 floating pill with live audio visualizer and `WS_EX_NOACTIVATE`. |
-| [`tray.py`](file:///f:/test/STT/tray.py) | Windows system tray icon and interactive device/mode menu. |
-| [`config.yaml`](file:///f:/test/STT/config.yaml) | YAML configuration file for user customization. |
-| [`test_e2e.py`](file:///f:/test/STT/test_e2e.py) | 5-stage automated verification test suite. |
+| `voxen/main.py` | Application entrypoint, hardware diagnostics, thread orchestrator. |
+| `voxen/audio.py` | Low-latency audio stream, RMS meter callbacks, device discovery. |
+| `voxen/hotkey.py` | Global keyboard hook (`pynput`) supporting `Ctrl+Shift` with debounce. |
+| `voxen/transcribe.py` | Local `faster-whisper` engine, VAD filter, silence handling, CPU/CUDA auto-selection. |
+| `voxen/cleanup.py` | Ollama localhost API client with anti-hallucination guardrails. |
+| `voxen/inject.py` | Safe Windows clipboard save/paste/restore injection. |
+| `voxen/overlay.py` | PySide6 floating pill with live audio visualizer and `WS_EX_NOACTIVATE`. |
+| `voxen/tray.py` | Windows system tray icon and interactive device/mode menu. |
+| `voxen/config.py` | Configuration loading and vocabulary correction merging. |
+| `config.yaml` | YAML configuration file for user customization. |
+| `tests/` | Verification and regression test scripts. |
 
 ---
 
@@ -67,7 +90,7 @@ Using `uv run`:
 ```powershell
 uv run voxen
 ```
-*(or `uv run python main.py` / `.\.venv\Scripts\python main.py`)*
+*(or `uv run python -m voxen` / `.\.venv\Scripts\python -m voxen`)*
 
 ### 3. Verification Test Suite
 

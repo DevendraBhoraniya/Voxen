@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 
-from cleanup import (
+from voxen.cleanup import (
     OllamaCleaner,
     check_ollama_status,
     check_model_parameters,

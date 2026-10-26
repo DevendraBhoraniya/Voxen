@@ -6,7 +6,7 @@ with VAD enabled vs disabled on identical reference audio.
 import time
 import wave
 import numpy as np
-from audio import resample_to_16k, normalize_audio
+from voxen.audio import resample_to_16k, normalize_audio
 from faster_whisper import WhisperModel
 
 def load_wav(path):

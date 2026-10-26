@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, Signal, QObject
 from PySide6.QtWidgets import QSystemTrayIcon, QMenu
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QBrush, QPen, QAction, QActionGroup
 
-from audio import list_audio_devices
+from .audio import list_audio_devices
 
 logger = logging.getLogger("Voxen.Tray")
 
@@ -27,7 +27,7 @@ def create_tray_icon_pixmap(recording: bool = False) -> QPixmap:
     painter.setRenderHint(QPainter.Antialiasing)
 
     try:
-        from overlay import COLORS as _C
+        from .overlay import COLORS as _C
         color = QColor(_C["record"] if recording else _C["accent"])
     except Exception:
         color = QColor("#FF4D6D" if recording else "#6B5EFF")

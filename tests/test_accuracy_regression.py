@@ -7,8 +7,8 @@ VAD behavior, and latency benchmarks against reference audio.
 import time
 import wave
 import numpy as np
-from audio import resample_to_16k, normalize_audio
-from transcribe import (
+from voxen.audio import resample_to_16k, normalize_audio
+from voxen.transcribe import (
     WhisperTranscriber,
     REFERENCE_VOCABULARY,
     DEFAULT_CORRECTIONS,

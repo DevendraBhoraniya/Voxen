@@ -11,7 +11,7 @@ Comprehensive automated test suite for Voxen Audio Stream Recovery:
 
 import time
 import sounddevice as sd
-from audio import AudioRecorder, resolve_input_device, refresh_audio_devices, list_audio_devices
+from voxen.audio import AudioRecorder, resolve_input_device, refresh_audio_devices, list_audio_devices
 
 
 def test_device_re_enumeration():

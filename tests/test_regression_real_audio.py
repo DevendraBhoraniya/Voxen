@@ -10,8 +10,8 @@ import sys
 import time
 import wave
 import numpy as np
-from audio import normalize_audio
-from transcribe import WhisperTranscriber
+from voxen.audio import normalize_audio
+from voxen.transcribe import WhisperTranscriber
 
 REFERENCE_TEXT = "Hello this is test one two three."
 
@@ -140,10 +140,10 @@ def run_regression_tests():
             "base_wer": wer_base
         })
 
-    if takes_tested == 0 and os.path.exists("test_speech.wav"):
+    if takes_tested == 0 and os.path.exists("bench_audio/p01.wav"):
         print("\n[*] Temporary real takes were cleaned up per privacy protocol.")
-        print("[*] Running regression verification on preserved reference voice sample (test_speech.wav)...")
-        audio = load_wav_file("test_speech.wav")
+        print("[*] Running regression verification on preserved reference voice sample (bench_audio/p01.wav)...")
+        audio = load_wav_file("bench_audio/p01.wav")
         norm_audio = normalize_audio(audio, target_rms=0.08)
         text_tiny, dur_tiny = tiny_transcriber.transcribe(norm_audio)
         text_base, dur_base = base_transcriber.transcribe(norm_audio)

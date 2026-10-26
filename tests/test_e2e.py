@@ -17,9 +17,9 @@ import win32gui
 import win32con
 import win32process
 
-from audio import AudioRecorder, list_audio_devices, get_default_input_device
-from transcribe import WhisperTranscriber, detect_hardware
-from cleanup import OllamaCleaner, check_ollama_status
+from voxen.audio import AudioRecorder, list_audio_devices, get_default_input_device
+from voxen.transcribe import WhisperTranscriber, detect_hardware
+from voxen.cleanup import OllamaCleaner, check_ollama_status
 import inject
 
 
