@@ -1,125 +1,152 @@
 """
 Floating recording pill overlay module for Voxen.
-Built with PySide6, frameless, translucent, non-focus-stealing (WS_EX_NOACTIVATE & MA_NOACTIVATE),
-featuring a real microphone-driven waveform visualizer, distinct recording/processing states,
-multi-monitor DPI auto-centering, and idle auto-hide.
+Premium minimal pill: idle dot, recording waveform, transcribing shimmer,
+success checkmark, error shake. No text state labels.
 """
 
 import sys
 import math
 import time
 import ctypes
+import ctypes.wintypes
 import logging
-from typing import List, Optional, Union
+from typing import List, Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal, Slot, QPoint, QRectF, QAbstractNativeEventFilter
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QGraphicsDropShadowEffect, QApplication
-from PySide6.QtGui import QColor, QPainter, QBrush, QPen, QFont, QGuiApplication, QLinearGradient
+from PySide6.QtCore import (
+    Qt, QTimer, Signal, Slot, QPoint, QRectF, QPropertyAnimation, QEasingCurve,
+)
+from PySide6.QtWidgets import QWidget, QApplication
+from PySide6.QtGui import (
+    QColor, QPainter, QBrush, QPen, QFont, QGuiApplication, QLinearGradient,
+    QFontDatabase,
+)
 
 logger = logging.getLogger("Voxen.Overlay")
 
-# Win32 Constants for non-activating window
+# ---- design tokens ----
+COLORS = {
+    "bg":           "#0E0E10",
+    "surface":      "#1A1A1F",
+    "border":       "#2A2A35",
+    "accent":       "#6B5EFF",
+    "accent_dim":   "#3D3580",
+    "record":       "#FF4D6D",
+    "success":      "#3DFF9A",
+    "text_primary": "#F0F0F5",
+    "text_muted":   "#5A5A6E",
+    "waveform":     "#6B5EFF",
+    "waveform_dim": "#2A2550",
+}
+FONT_FAMILY = "Inter"
+PILL_RADIUS = 28
+PILL_H = 56
+PILL_W_IDLE = 48
+PILL_W_WIDE = 320
+
+# Win32
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TOPMOST = 0x00000008
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_TRANSPARENT = 0x00000020
 WM_MOUSEACTIVATE = 0x0021
 MA_NOACTIVATE = 3
 
 
+def set_click_through(hwnd, enable: bool):
+    style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    if enable:
+        style |= WS_EX_TRANSPARENT
+    else:
+        style &= ~WS_EX_TRANSPARENT
+    ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+
+
+def load_font_family() -> str:
+    families = QFontDatabase.families()
+    if FONT_FAMILY in families:
+        return FONT_FAMILY
+    if "Segoe UI" in families:
+        return "Segoe UI"
+    return "Arial"
+
+
+# ---- waveform visualizer with smoothing ----
 class RealMicWaveformVisualizer(QWidget):
-    """
-    Renders 24 vertical waveform bars driven strictly by real microphone samples.
-    Stylized with Voxen signature purple (#A36BFF) matching reference design.
-    """
+    SMOOTHING = 0.6
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(228, 32)
+        self.setFixedSize(232, 32)
         self.num_bars = 24
         self.levels = [0.02] * self.num_bars
-        self._target_levels = [0.02] * self.num_bars
-
-        # Fast visual decay timer (30 FPS)
+        self._target = [0.02] * self.num_bars
         self._timer = QTimer(self)
         self._timer.setInterval(33)
-        self._timer.timeout.connect(self._step_decay)
+        self._timer.timeout.connect(self._step)
 
     def start(self):
-        """Start visualization timer."""
         self._timer.start()
 
     def stop(self):
-        """Stop timer and reset to baseline."""
         self._timer.stop()
         self.levels = [0.02] * self.num_bars
-        self._target_levels = [0.02] * self.num_bars
+        self._target = [0.02] * self.num_bars
         self.update()
 
-    def update_real_audio(self, overall_rms: float, sub_levels: Optional[List[float]] = None):
-        """Update live target heights from actual microphone chunks."""
+    def update_real_audio(self, overall_rms: float, sub_levels=None):
         if sub_levels and len(sub_levels) == self.num_bars:
             for i in range(self.num_bars):
                 raw = sub_levels[i]
-                self._target_levels[i] = max(0.02, min(1.0, raw * 2.2))
+                self._target[i] = max(0.02, min(1.0, raw * 2.2))
         else:
-            # Fallback using overall RMS with natural acoustic curve
             for i in range(self.num_bars):
                 dist = abs(i - (self.num_bars - 1) / 2.0) / (self.num_bars / 2.0)
                 factor = 1.0 - 0.5 * dist
-                self._target_levels[i] = max(0.02, min(1.0, overall_rms * factor * 3.5))
+                self._target[i] = max(0.02, min(1.0, overall_rms * factor * 3.5))
 
-        # Fast rise
-        for i in range(self.num_bars):
-            if self._target_levels[i] > self.levels[i]:
-                self.levels[i] = self._target_levels[i]
-
-    def _step_decay(self):
-        """Smooth natural decay."""
+    def _step(self):
         changed = False
         for i in range(self.num_bars):
-            target = self._target_levels[i]
-            if self.levels[i] > target:
-                self.levels[i] = max(target, self.levels[i] - 0.12)
+            raw = self._target[i]
+            self.levels[i] = self.SMOOTHING * self.levels[i] + (1 - self.SMOOTHING) * raw
+            self._target[i] = max(0.02, self._target[i] - 0.06)
+            if self.levels[i] > 0.03:
                 changed = True
-            self._target_levels[i] = max(0.02, self._target_levels[i] - 0.08)
-
-        if changed or any(lvl > 0.03 for lvl in self.levels):
+        if changed or any(l > 0.03 for l in self.levels):
             self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-
         w = self.width()
         h = self.height()
-        bar_w = 6.0
-        gap = 3.0
+        bar_w = 3.0
+        gap = 2.0
         total_w = self.num_bars * bar_w + (self.num_bars - 1) * gap
         start_x = (w - total_w) / 2.0
 
-        purple_brush = QBrush(QColor(163, 107, 255))  # #A36BFF from reference
-        painter.setBrush(purple_brush)
-        painter.setPen(Qt.NoPen)
-
         for i in range(self.num_bars):
             lvl = self.levels[i]
-            # Height between 4px and max height
-            bar_h = max(4.0, lvl * (h - 4.0))
+            bar_h = max(4.0, lvl * 28.0)
             x = start_x + i * (bar_w + gap)
             y = (h - bar_h) / 2.0
-            painter.drawRoundedRect(QRectF(x, y, bar_w, bar_h), bar_w / 2.0, bar_w / 2.0)
+            grad = QLinearGradient(x, y, x, y + bar_h)
+            grad.setColorAt(0.0, QColor(COLORS["waveform"]))
+            grad.setColorAt(1.0, QColor(COLORS["waveform_dim"]))
+            painter.setBrush(QBrush(grad))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(QRectF(x, y, bar_w, bar_h), 2.0, 2.0)
 
 
+# ---- spinner ----
 class LightweightSpinner(QWidget):
-    """Minimal, low-overhead rotating arc indicator for processing state."""
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(16, 16)
         self.angle = 0
         self._timer = QTimer(self)
-        self._timer.setInterval(40)  # 25 fps
+        self._timer.setInterval(40)
         self._timer.timeout.connect(self._rotate)
 
     def start(self):
@@ -136,24 +163,55 @@ class LightweightSpinner(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        pen = QPen(QColor(0, 160, 255), 2.0)
+        pen = QPen(QColor(COLORS["accent"]), 2.0)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         painter.drawArc(QRectF(2, 2, 12, 12), -self.angle * 16, 260 * 16)
 
 
-class FloatingPill(QWidget):
-    """
-    Polished floating pill overlay shown strictly during recording and processing.
-    - Stays completely hidden when idle.
-    - WS_EX_NOACTIVATE & MA_NOACTIVATE prevent stealing focus from target typing apps.
-    - Handles monitor geometry, DPI scaling, and screen resolution changes.
-    """
+# ---- shimmer widget ----
+class ShimmerBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(4)
+        self._x = -40.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._step)
 
-    # Thread-safe Qt signals
-    state_signal = Signal(str, str)          # (state_name, display_text)
-    audio_signal = Signal(float, object)     # (rms_float, optional_sub_levels_list)
+    def start(self):
+        self._x = -40.0
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+
+    def _step(self):
+        self._x += 2.5
+        if self._x > self.parent().width() + 40 if self.parent() else 360:
+            self._x = -40.0
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        x = self._x
+        grad = QLinearGradient(x, 0, x + 40, 0)
+        grad.setColorAt(0.0, QColor(COLORS["accent"]))
+        grad.setColorAt(0.5, QColor(COLORS["accent"]))
+        grad.setColorAt(1.0, QColor(COLORS["accent"]))
+        c = QColor(COLORS["accent"])
+        c.setAlpha(153)  # 60%
+        painter.setBrush(QBrush(c))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(QRectF(x, 0, 40, 4), 2, 2)
+
+
+# ---- main pill ----
+class FloatingPill(QWidget):
+    state_signal = Signal(str, str)
+    audio_signal = Signal(float, object)
     hide_signal = Signal()
 
     def __init__(self, position: str = "bottom_center", margin_bottom: int = 48):
@@ -163,27 +221,38 @@ class FloatingPill(QWidget):
         self._drag_pos = QPoint()
         self._is_recording = False
         self._record_start_time = 0.0
+        self._state = "IDLE"
+        self._pulse = 0.0
+        self._pulse_dir = 1
+        self._check_timer = None
+        self._error_timer = None
+        self._shake_timer = None
+        self._shake_offset = 0
+        self._shake_step = 0
+        self._font = load_font_family()
 
         self._init_window_flags()
         self._init_ui()
         self._connect_signals()
         self._connect_screen_events()
 
-        # Auto-hide timer for completed/error states
-        self._hide_timer = QTimer(self)
-        self._hide_timer.setSingleShot(True)
-        self._hide_timer.timeout.connect(self.hide)
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(50)
+        self._pulse_timer.timeout.connect(self._pulse_step)
 
-        # Elapsed recording timer (updates second counter: 0:02, 0:03...)
         self._elapsed_timer = QTimer(self)
-        self._elapsed_timer.setInterval(500)
-        self._elapsed_timer.timeout.connect(self._update_elapsed_time)
+        self._elapsed_timer.setInterval(1000)
+        self._elapsed_timer.timeout.connect(self._update_elapsed)
 
-        # Ensure pill starts completely hidden when idle
-        self.hide()
+        # click-through initially (idle)
+        self._apply_win32_noactivate()
+        QTimer.singleShot(0, lambda: set_click_through(int(self.winId()), True))
+
+        self._reposition()
+        self.show()
+        self._set_state("IDLE")
 
     def _init_window_flags(self):
-        """Set frameless, always-on-top, non-activating window flags."""
         self.setWindowFlags(
             Qt.FramelessWindowHint |
             Qt.WindowStaysOnTopHint |
@@ -194,29 +263,21 @@ class FloatingPill(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
 
     def showEvent(self, event):
-        """Re-assert Windows extended styles on every show."""
         super().showEvent(event)
         self._apply_win32_noactivate()
 
     def _apply_win32_noactivate(self):
-        """Apply Windows extended styles so clicks or shows never steal cursor focus."""
         try:
             hwnd = int(self.winId())
             user32 = ctypes.windll.user32
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            user32.SetWindowLongW(
-                hwnd,
-                GWL_EXSTYLE,
-                style | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW
-            )
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
         except Exception as e:
             logger.debug(f"Could not apply WS_EX_NOACTIVATE: {e}")
 
     def nativeEvent(self, eventType, message):
-        """Intercept WM_MOUSEACTIVATE so mouse clicks never activate or steal focus."""
         if eventType == b"windows_generic_MSG":
             try:
-                # MSG pointer unpacking
                 msg_val = ctypes.wintypes.MSG.from_address(message.__int__())
                 if msg_val.message == WM_MOUSEACTIVATE:
                     return True, MA_NOACTIVATE
@@ -225,43 +286,20 @@ class FloatingPill(QWidget):
         return super().nativeEvent(eventType, message)
 
     def _init_ui(self):
-        self.setFixedHeight(40)
-        self.setMinimumWidth(210)
+        self.setFixedHeight(PILL_H)
+        self._width = PILL_W_IDLE
+        self.resize(self._width, PILL_H)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 5, 14, 5)
-        layout.setSpacing(9)
-
-        # 1. State indicator (red recording dot or spinner)
-        self.status_dot = QLabel(self)
-        self.status_dot.setFixedSize(9, 9)
-        self.status_dot.setStyleSheet("background-color: #ff3b30; border-radius: 4px;")
+        self.visualizer = RealMicWaveformVisualizer(self)
+        self.visualizer.hide()
 
         self.spinner = LightweightSpinner(self)
         self.spinner.hide()
 
-        # 2. Status & timer label
-        self.label = QLabel("Listening", self)
-        font = QFont("Segoe UI", 9, QFont.DemiBold)
-        self.label.setFont(font)
-        self.label.setStyleSheet("color: #FFFFFF;")
+        self.shimmer = ShimmerBar(self)
+        self.shimmer.hide()
 
-        self.timer_label = QLabel("", self)
-        timer_font = QFont("Segoe UI", 8, QFont.Normal)
-        self.timer_label.setFont(timer_font)
-        self.timer_label.setStyleSheet("color: #999999; margin-left: -2px;")
-
-        # 3. Real live waveform visualizer
-        self.visualizer = RealMicWaveformVisualizer(self)
-
-        layout.addWidget(self.status_dot)
-        layout.addWidget(self.spinner)
-        layout.addWidget(self.label)
-        layout.addWidget(self.timer_label)
-        layout.addStretch()
-        layout.addWidget(self.visualizer)
-
-        self._reposition_bottom_center()
+        self._reposition()
 
     def _connect_signals(self):
         self.state_signal.connect(self._handle_state)
@@ -269,165 +307,252 @@ class FloatingPill(QWidget):
         self.hide_signal.connect(self._handle_hide)
 
     def _connect_screen_events(self):
-        """Listen to screen geometry changes and DPI updates across monitors."""
         app = QGuiApplication.instance()
         if app:
-            app.screenAdded.connect(self._on_screens_changed)
-            app.screenRemoved.connect(self._on_screens_changed)
-            app.primaryScreenChanged.connect(self._on_screens_changed)
-
+            app.screenAdded.connect(self._reposition)
+            app.screenRemoved.connect(self._reposition)
+            app.primaryScreenChanged.connect(self._reposition)
         screen = QGuiApplication.primaryScreen()
         if screen:
-            screen.geometryChanged.connect(self._reposition_bottom_center)
-            screen.logicalDotsPerInchChanged.connect(self._reposition_bottom_center)
+            screen.geometryChanged.connect(self._reposition)
+            screen.logicalDotsPerInchChanged.connect(self._reposition)
 
-    def _on_screens_changed(self, *args):
-        self._reposition_bottom_center()
-
-    def _reposition_bottom_center(self):
-        """Position pill centered at the bottom of the active/primary display."""
+    def _reposition(self, *args):
         screen = QGuiApplication.primaryScreen()
         if not screen:
             return
         geo = screen.availableGeometry()
-        w = max(220, self.sizeHint().width())
-        h = 40
-        self.resize(w, h)
-
+        w = self.width()
+        h = PILL_H
         x = geo.x() + (geo.width() - w) // 2
         y = geo.y() + geo.height() - h - self.margin_bottom
         self.move(x, y)
 
-    @Slot(float, object)
-    def _on_audio_data(self, rms: float, sub_levels: Optional[List[float]]):
-        """Forward real mic samples to waveform."""
-        if self._is_recording and self.isVisible():
+    def _animate_width(self, target: int, duration: int = 200):
+        anim = QPropertyAnimation(self, b"minimumWidth")
+        anim.setDuration(duration)
+        anim.setStartValue(self.width())
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.valueChanged.connect(lambda v: (self.resize(int(v), PILL_H), self._reposition()))
+        anim.start()
+        self._width_anim = anim
+
+    def _on_audio_data(self, rms: float, sub_levels=None):
+        if self._is_recording:
             self.visualizer.update_real_audio(rms, sub_levels)
 
-    def _update_elapsed_time(self):
+    def _update_elapsed(self):
         if self._is_recording:
             elapsed = int(time.time() - self._record_start_time)
-            mins = elapsed // 60
-            secs = elapsed % 60
-            self.timer_label.setText(f"{mins}:{secs:02d}")
-            self.adjustSize()
+            self._elapsed_text = f"{elapsed // 60}:{elapsed % 60:02d}"
+            self.update()
+
+    def _pulse_step(self):
+        self._pulse += 0.08 * self._pulse_dir
+        if self._pulse >= 1.0:
+            self._pulse = 1.0
+            self._pulse_dir = -1
+        elif self._pulse <= 0.0:
+            self._pulse = 0.0
+            self._pulse_dir = 1
+        self.update()
+
+    def _set_state(self, state: str):
+        self._state = state
+        self._is_recording = (state == "RECORDING")
+
+        # click-through when idle
+        try:
+            set_click_through(int(self.winId()), state == "IDLE")
+        except Exception:
+            pass
+
+        if state == "RECORDING":
+            self._pulse = 0.0
+            self._pulse_dir = 1
+            self._pulse_timer.start()
+            self._elapsed_timer.start()
+            self._record_start_time = time.time()
+            self._elapsed_text = "0:00"
+            self.visualizer.start()
+            self.visualizer.show()
+            self.spinner.hide()
+            self.spinner.stop()
+            self.shimmer.hide()
+            self.shimmer.stop()
+            self._animate_width(PILL_W_WIDE, 200)
+
+        elif state in ("TRANSCRIBING", "CLEANING"):
+            self._pulse_timer.stop()
+            self._elapsed_timer.stop()
+            self.visualizer.hide()
+            self.visualizer.stop()
+            self.spinner.show()
+            self.spinner.start()
+            self.shimmer.show()
+            self.shimmer.start()
+            self.shimmer.setFixedWidth(PILL_W_WIDE)
+            self._animate_width(PILL_W_WIDE, 200)
+
+        elif state == "SUCCESS":
+            self._pulse_timer.stop()
+            self._elapsed_timer.stop()
+            self.visualizer.hide()
+            self.visualizer.stop()
+            self.spinner.hide()
+            self.spinner.stop()
+            self.shimmer.hide()
+            self.shimmer.stop()
+            self._success = True
+            self._animate_width(PILL_W_IDLE, 150)
+            QTimer.singleShot(800, self._fade_to_idle)
+
+        elif state == "ERROR":
+            self._pulse_timer.stop()
+            self._elapsed_timer.stop()
+            self.visualizer.hide()
+            self.visualizer.stop()
+            self.spinner.hide()
+            self.spinner.stop()
+            self.shimmer.hide()
+            self.shimmer.stop()
+            self._error = True
+            self._shake_step = 0
+            self._shake_timer = QTimer(self)
+            self._shake_timer.setInterval(50)
+            self._shake_timer.timeout.connect(self._shake_step_fn)
+            self._shake_timer.start()
+            QTimer.singleShot(1200, self._fade_to_idle)
+
+        elif state == "SILENT":
+            self._fade_to_idle()
+
+        else:  # IDLE
+            self._pulse_timer.stop()
+            self._elapsed_timer.stop()
+            self.visualizer.hide()
+            self.visualizer.stop()
+            self.spinner.hide()
+            self.spinner.stop()
+            self.shimmer.hide()
+            self.shimmer.stop()
+            self._success = False
+            self._error = False
+            self._animate_width(PILL_W_IDLE, 150)
+
+    def _fade_to_idle(self):
+        self._success = False
+        self._error = False
+        if self._shake_timer:
+            self._shake_timer.stop()
+            self._shake_timer = None
+        self._set_state("IDLE")
+
+    def _shake_step_fn(self):
+        if self._shake_step >= 6:
+            self._shake_timer.stop()
+            self._shake_timer = None
+            self._shake_offset = 0
+            self.update()
+            return
+        self._shake_offset = 6 if (self._shake_step % 2 == 0) else -6
+        self._shake_step += 1
+        self.update()
 
     @Slot(str, str)
     def _handle_state(self, state: str, text: str):
-        """Update pill UI based on state machine."""
-        self._hide_timer.stop()
-        self.label.setText(text)
+        self._set_state(state)
 
-        if state == "RECORDING":
-            self._is_recording = True
-            self._record_start_time = time.time()
-            self.timer_label.setText("0:00")
-            self.timer_label.show()
-            self._elapsed_timer.start()
-
-            self.status_dot.show()
-            self.status_dot.setStyleSheet(
-                "background-color: #ff3b30; border-radius: 4px;"
-            )
-            self.spinner.stop()
-            self.spinner.hide()
-
-            self.visualizer.start()
-            self.visualizer.show()
-
-            self.adjustSize()
-            self._reposition_bottom_center()
-            self.show()
-
-        elif state in ("TRANSCRIBING", "CLEANING"):
-            self._is_recording = False
-            self._elapsed_timer.stop()
-            self.timer_label.hide()
-
-            self.status_dot.hide()
-            self.spinner.show()
-            self.spinner.start()
-
-            self.visualizer.stop()
-            self.visualizer.hide()
-
-            self.adjustSize()
-            self._reposition_bottom_center()
-            self.show()
-
-        elif state == "SUCCESS":
-            self._is_recording = False
-            self._elapsed_timer.stop()
-            self.timer_label.hide()
-
-            self.spinner.stop()
-            self.spinner.hide()
-            self.status_dot.show()
-            self.status_dot.setStyleSheet(
-                "background-color: #34c759; border-radius: 4px;"
-            )
-            self.visualizer.stop()
-            self.visualizer.hide()
-
-            self.adjustSize()
-            self._reposition_bottom_center()
-            self.show()
-            self._hide_timer.start(800)  # Auto-hide when idle
-
-        elif state in ("SILENT", "ERROR"):
-            self._is_recording = False
-            self._elapsed_timer.stop()
-            self.timer_label.hide()
-
-            self.spinner.stop()
-            self.spinner.hide()
-            self.status_dot.show()
-            self.status_dot.setStyleSheet(
-                "background-color: #ff9500; border-radius: 4px;"
-            )
-            self.visualizer.stop()
-            self.visualizer.hide()
-
-            self.adjustSize()
-            self._reposition_bottom_center()
-            self.show()
-            self._hide_timer.start(1200)  # Auto-hide when idle
-
-        elif state == "IDLE":
-            self._handle_hide()
+    @Slot(float, object)
+    def _on_audio_data(self, rms: float, sub_levels=None):
+        if self._is_recording:
+            self.visualizer.update_real_audio(rms, sub_levels)
 
     @Slot()
     def _handle_hide(self):
-        """Hide pill completely when idle."""
-        self._is_recording = False
-        self._elapsed_timer.stop()
-        self.visualizer.stop()
-        self.spinner.stop()
         self.hide()
 
     def paintEvent(self, event):
-        """Draw obsidian frosted glass rounded capsule."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        w = self.width()
+        h = PILL_H
+        r = PILL_RADIUS
 
-        rect = self.rect()
-        # Dark obsidian acrylic
-        painter.setBrush(QBrush(QColor(18, 18, 22, 235)))
-        # Subtle glass highlight border
-        painter.setPen(QPen(QColor(255, 255, 255, 32), 1.0))
-        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 19.0, 19.0)
+        # shadow
+        # (approximated via layered rects not needed; keep simple)
+        # background
+        bg = QColor(COLORS["surface"])
+        bg.setAlpha(217)  # 85%
+        painter.setBrush(QBrush(bg))
+        painter.setPen(QPen(QColor(COLORS["border"]), 1))
+        rect = QRectF(0.5, 0.5, w - 1, h - 1)
+        painter.drawRoundedRect(rect, r, r)
 
-    # Allow dragging with mouse if user desires custom placement
+        # recording border glow
+        if self._state == "RECORDING":
+            painter.setPen(QPen(QColor(COLORS["accent_dim"]), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect, r, r)
+
+        # shake offset apply via translate (visual only)
+        cx = w // 2 + self._shake_offset
+        cy = h // 2
+
+        if self._state == "RECORDING":
+            # red pulsing dot left
+            scale = 1.0 + 0.4 * self._pulse
+            dot_r = 5 * scale
+            painter.setBrush(QBrush(QColor(COLORS["record"])))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QRectF(18 - dot_r, cy - dot_r, dot_r * 2, dot_r * 2))
+            # waveform center
+            self.visualizer.move((w - self.visualizer.width()) // 2, (h - self.visualizer.height()) // 2)
+            # elapsed time right
+            font = QFont(self._font, 11)
+            font.setStyleStrategy(QFont.PreferAntialias)
+            painter.setFont(font)
+            painter.setPen(QColor(COLORS["text_muted"]))
+            painter.drawText(QRectF(w - 52, 0, 48, h), Qt.AlignVCenter | Qt.AlignRight, self._elapsed_text)
+
+        elif self._state in ("TRANSCRIBING", "CLEANING"):
+            # spinner left
+            self.spinner.move(18, (h - 16) // 2)
+            # shimmer
+            self.shimmer.move(0, (h - 4) // 2)
+            self.shimmer.setFixedWidth(w)
+
+        elif self._state == "SUCCESS":
+            # checkmark
+            font = QFont(self._font, 20, QFont.Bold)
+            painter.setFont(font)
+            painter.setPen(QColor(COLORS["success"]))
+            painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, "✓")
+
+        elif self._state == "ERROR":
+            font = QFont(self._font, 20, QFont.Bold)
+            painter.setFont(font)
+            painter.setPen(QColor(COLORS["record"]))
+            painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, "×")
+
+        elif self._state == "IDLE":
+            # small accent dot
+            dot_r = 4
+            glow = QColor(COLORS["accent"])
+            glow.setAlpha(102)  # 40%
+            painter.setBrush(QBrush(glow))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QRectF(cx - dot_r - 2, cy - dot_r - 2, (dot_r + 2) * 2, (dot_r + 2) * 2))
+            painter.setBrush(QBrush(QColor(COLORS["accent"])))
+            painter.drawEllipse(QRectF(cx - dot_r, cy - dot_r, dot_r * 2, dot_r * 2))
+
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.LeftButton and self._state != "IDLE":
             self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
 
     def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and not self._drag_pos.isNull():
+        if event.buttons() == Qt.LeftButton and not self._drag_pos.isNull() and self._state != "IDLE":
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
-
-
-# Alias matching reference repository
-Overlay = FloatingPill

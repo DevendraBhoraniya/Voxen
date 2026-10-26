@@ -18,34 +18,32 @@ logger = logging.getLogger("Voxen.Tray")
 
 
 def create_tray_icon_pixmap(recording: bool = False) -> QPixmap:
-    """Dynamically draw a high-DPI 32x32 microphone tray icon."""
-    pixmap = QPixmap(32, 32)
+    """Draw a waveform glyph: 5 bars of increasing then decreasing height."""
+    size = 32
+    pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
 
-    # Coral red when recording, crisp electric azure when idle
-    fill_color = QColor(255, 59, 48) if recording else QColor(0, 140, 255)
-    body_color = QColor(255, 255, 255)
+    try:
+        from overlay import COLORS as _C
+        color = QColor(_C["record"] if recording else _C["accent"])
+    except Exception:
+        color = QColor("#FF4D6D" if recording else "#6B5EFF")
 
-    # Base background circle
-    painter.setBrush(QBrush(fill_color))
+    painter.setBrush(QBrush(color))
     painter.setPen(Qt.NoPen)
-    painter.drawEllipse(2, 2, 28, 28)
 
-    # Microphone capsule
-    painter.setBrush(QBrush(body_color))
-    painter.drawRoundedRect(12, 7, 8, 12, 4, 4)
-
-    # Microphone arc and stand
-    pen = QPen(body_color, 2)
-    pen.setCapStyle(Qt.RoundCap)
-    painter.setPen(pen)
-    painter.setBrush(Qt.NoBrush)
-    painter.drawArc(9, 11, 14, 11, 0, -180 * 16)
-    painter.drawLine(16, 22, 16, 25)
-    painter.drawLine(12, 25, 20, 25)
+    heights = [6, 12, 20, 12, 6]
+    bar_w = 3
+    gap = 3
+    total = len(heights) * bar_w + (len(heights) - 1) * gap
+    start_x = (size - total) // 2
+    for i, h in enumerate(heights):
+        x = start_x + i * (bar_w + gap)
+        y = (size - h) // 2
+        painter.drawRoundedRect(x, y, bar_w, h, 1.5, 1.5)
 
     painter.end()
     return pixmap
@@ -101,13 +99,16 @@ class SystemTrayManager(QObject):
         """Update tray icon when recording state changes."""
         self.tray_icon.setIcon(self.icon_recording if is_recording else self.icon_idle)
         self._update_tooltip(is_recording)
+        if hasattr(self, "act_header"):
+            label = "Recording" if is_recording else "Ready"
+            self.act_header.setText("Voxen  \u2022  " + label)
 
         # Update action text in menu
         combo = self.config.get("hotkey", {}).get("combination", "ctrl+shift").upper()
         if is_recording:
-            self.action_toggle.setText(f"Stop Dictation ({combo})")
+            self.action_toggle.setText(f"Stop dictation\t{combo}")
         else:
-            self.action_toggle.setText(f"Start Dictation ({combo})")
+            self.action_toggle.setText(f"Start dictation\t{combo}")
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:  # Single click
@@ -116,33 +117,38 @@ class SystemTrayManager(QObject):
     def _build_menu(self):
         self.menu.clear()
 
-        # 1. Hotkey reminder header
         combo = self.config.get("hotkey", {}).get("combination", "ctrl+shift").upper()
-        act_header = QAction(f"Voxen  [Hotkey: {combo}]", self.menu)
+
+        # 1. Status header (non-clickable)
+        status = "Recording" if False else "Ready"
+        self.act_header = QAction(f"Voxen  \u2022  {status}", self.menu)
+        act_header = self.act_header
         act_header.setEnabled(False)
         self.menu.addAction(act_header)
 
-        # 2. Toggle Action
-        self.action_toggle = QAction(f"Start Dictation ({combo})", self.menu)
+        self.menu.addSeparator()
+
+        # 2. Toggle action with hotkey suffix
+        self.action_toggle = QAction(f"Start dictation\t{combo}", self.menu)
         self.action_toggle.triggered.connect(self.toggle_recording_requested.emit)
         self.menu.addAction(self.action_toggle)
 
         self.menu.addSeparator()
 
         # 3. Hotkey Mode Selection (Toggle vs Hold)
-        mode_menu = self.menu.addMenu("Hotkey Mode")
+        mode_menu = self.menu.addMenu("Hotkey mode")
         self.mode_group = QActionGroup(self)
         self.mode_group.setExclusive(True)
 
         current_mode = self.config.get("hotkey", {}).get("mode", "toggle").lower()
 
-        act_toggle = QAction("Toggle (Press to start, press to stop)", mode_menu, checkable=True)
+        act_toggle = QAction("Toggle mode", mode_menu, checkable=True)
         act_toggle.setChecked(current_mode == "toggle")
         act_toggle.triggered.connect(lambda: self._on_mode_selected("toggle"))
         self.mode_group.addAction(act_toggle)
         mode_menu.addAction(act_toggle)
 
-        act_hold = QAction("Hold-to-Talk (Hold keys down while speaking)", mode_menu, checkable=True)
+        act_hold = QAction("Hold to talk", mode_menu, checkable=True)
         act_hold.setChecked(current_mode == "hold")
         act_hold.triggered.connect(lambda: self._on_mode_selected("hold"))
         self.mode_group.addAction(act_hold)
@@ -154,7 +160,7 @@ class SystemTrayManager(QObject):
         self._refresh_audio_devices()
 
         # 5. Model Selector Submenu
-        model_menu = self.menu.addMenu("STT Model")
+        model_menu = self.menu.addMenu("Speech model")
         self.model_group = QActionGroup(self)
         self.model_group.setExclusive(True)
 
@@ -187,14 +193,14 @@ class SystemTrayManager(QObject):
 
         # 6. Cleanup Toggle
         cleanup_cfg = self.config.get("cleanup", {})
-        self.act_cleanup = QAction("Ollama Text Cleanup", self.menu, checkable=True)
+        self.act_cleanup = QAction("Ollama text cleanup", self.menu, checkable=True)
         self.act_cleanup.setChecked(cleanup_cfg.get("enabled", False))
         self.act_cleanup.toggled.connect(self.cleanup_toggled.emit)
         self.menu.addAction(self.act_cleanup)
 
         # 7. Overlay Toggle
         ui_cfg = self.config.get("ui", {})
-        self.act_overlay = QAction("Show Floating Pill", self.menu, checkable=True)
+        self.act_overlay = QAction("Show floating pill", self.menu, checkable=True)
         self.act_overlay.setChecked(ui_cfg.get("show_overlay", True))
         self.act_overlay.toggled.connect(self.overlay_toggled.emit)
         self.menu.addAction(self.act_overlay)
@@ -203,14 +209,14 @@ class SystemTrayManager(QObject):
 
         # 8. Settings / Config File
         if self.on_open_config:
-            act_config = QAction("Settings (config.yaml)...", self.menu)
+            act_config = QAction("Settings...", self.menu)
             act_config.triggered.connect(self.on_open_config)
             self.menu.addAction(act_config)
 
         self.menu.addSeparator()
 
         # 9. Quit
-        act_quit = QAction("Quit Voxen", self.menu)
+        act_quit = QAction("Quit", self.menu)
         act_quit.triggered.connect(self.quit_requested.emit)
         self.menu.addAction(act_quit)
 
