@@ -63,11 +63,13 @@ class SystemTrayManager(QObject):
     def __init__(
         self,
         config: Dict,
-        on_open_config: Optional[Callable[[], None]] = None
+        on_open_config: Optional[Callable[[], None]] = None,
+        on_open_settings: Optional[Callable[[], None]] = None
     ):
         super().__init__()
         self.config = config
         self.on_open_config = on_open_config
+        self.on_open_settings = on_open_settings
 
         self.tray_icon = QSystemTrayIcon()
         self.icon_idle = QIcon(create_tray_icon_pixmap(recording=False))
@@ -207,11 +209,14 @@ class SystemTrayManager(QObject):
 
         self.menu.addSeparator()
 
-        # 8. Settings / Config File
-        if self.on_open_config:
-            act_config = QAction("Settings...", self.menu)
-            act_config.triggered.connect(self.on_open_config)
-            self.menu.addAction(act_config)
+        # 8. Settings window (preferred) or config file fallback
+        if self.on_open_settings or self.on_open_config:
+            act_settings = QAction("Settings...", self.menu)
+            if self.on_open_settings:
+                act_settings.triggered.connect(self.on_open_settings)
+            else:
+                act_settings.triggered.connect(self.on_open_config)
+            self.menu.addAction(act_settings)
 
         self.menu.addSeparator()
 

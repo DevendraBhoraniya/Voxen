@@ -25,17 +25,17 @@ logger = logging.getLogger("Voxen.Overlay")
 
 # ---- design tokens ----
 COLORS = {
-    "bg":           "#0E0E10",
-    "surface":      "#1A1A1F",
-    "border":       "#2A2A35",
-    "accent":       "#6B5EFF",
-    "accent_dim":   "#3D3580",
-    "record":       "#FF4D6D",
-    "success":      "#3DFF9A",
-    "text_primary": "#F0F0F5",
-    "text_muted":   "#5A5A6E",
-    "waveform":     "#6B5EFF",
-    "waveform_dim": "#2A2550",
+    "bg":           "#101114",
+    "surface":      "#191B20",
+    "border":       "#30333B",
+    "accent":       "#8B7CFF",
+    "accent_dim":   "#5B4FD6",
+    "record":       "#FF6B76",
+    "success":      "#65D6A6",
+    "text_primary": "#F3F4F6",
+    "text_muted":   "#9CA3AF",
+    "waveform":     "#8B7CFF",
+    "waveform_dim": "#3D3580",
 }
 FONT_FAMILY = "Inter"
 PILL_RADIUS = 28
@@ -361,6 +361,9 @@ class FloatingPill(QWidget):
     def _set_state(self, state: str):
         self._state = state
         self._is_recording = (state == "RECORDING")
+        if state != "IDLE":
+            self.show()
+            self.raise_()
 
         # click-through when idle
         try:
@@ -440,6 +443,7 @@ class FloatingPill(QWidget):
             self._success = False
             self._error = False
             self._animate_width(PILL_W_IDLE, 150)
+            self.hide()
 
     def _fade_to_idle(self):
         self._success = False
@@ -528,13 +532,13 @@ class FloatingPill(QWidget):
             font = QFont(self._font, 20, QFont.Bold)
             painter.setFont(font)
             painter.setPen(QColor(COLORS["success"]))
-            painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, "✓")
+            painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, "\u2713")
 
         elif self._state == "ERROR":
             font = QFont(self._font, 20, QFont.Bold)
             painter.setFont(font)
             painter.setPen(QColor(COLORS["record"]))
-            painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, "×")
+            painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, "\u2715")
 
         elif self._state == "IDLE":
             # small accent dot

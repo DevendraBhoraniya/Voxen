@@ -35,6 +35,7 @@ from .transcribe import (
 from .cleanup import OllamaCleaner, check_ollama_status
 from . import inject
 from .overlay import FloatingPill
+from .settings_window import SettingsWindow
 from .tray import SystemTrayManager
 
 # Configure logging: console plus a rotating file log under
@@ -135,6 +136,7 @@ class VoxenApp(QObject):
         self._is_processing = False
         self._lock = threading.Lock()
         self.overlay = None
+        self._settings_window = None
 
         # 1. Initialize Audio Recorder
         audio_cfg = self.config.get("audio", {})
@@ -198,7 +200,8 @@ class VoxenApp(QObject):
         # 5. Initialize System Tray
         self.tray = SystemTrayManager(
             config=self.config,
-            on_open_config=self._open_config_file
+            on_open_config=self._open_config_file,
+            on_open_settings=self._open_settings_window
         )
         self._connect_tray_signals()
         self.tray.show()
@@ -245,6 +248,21 @@ class VoxenApp(QObject):
         if os.path.exists(config_path):
             os.system(f'start "" "{config_path}"')
 
+    def _open_settings_window(self):
+        """Open (or focus) the settings window."""
+        if self._settings_window is None:
+            self._settings_window = SettingsWindow(
+                config=self.config,
+                on_device_changed=self._on_device_changed,
+                on_model_changed=self._on_model_changed,
+                on_mode_changed=self._on_mode_changed,
+                on_cleanup_toggled=self._on_cleanup_toggled,
+                on_overlay_toggled=self._on_overlay_toggled,
+            )
+        self._settings_window.show()
+        self._settings_window.raise_()
+        self._settings_window.activateWindow()
+
     def _on_audio_level(self, rms: float, sub_levels=None):
         """Forward real audio level samples to UI safely (recording only)."""
         if not self.recorder.is_recording:
@@ -252,6 +270,9 @@ class VoxenApp(QObject):
         overlay = getattr(self, "overlay", None)
         if overlay is not None and self.config.get("ui", {}).get("show_overlay", True):
             overlay.audio_signal.emit(rms, sub_levels)
+        sw = getattr(self, "_settings_window", None)
+        if sw is not None and sw.isVisible():
+            sw.audio_level.emit(rms, sub_levels)
 
     def _on_model_changed(self, model_key: str):
         """Switch speech recognition model/engine on the fly."""
@@ -470,6 +491,9 @@ class VoxenApp(QObject):
         self.hotkey_listener.stop()
         if self.recorder.is_recording:
             self.recorder.stop_recording()
+        if self._settings_window is not None:
+            self._settings_window.close()
+            self._settings_window = None
         self.recorder.close()
         self.tray.hide()
         self.overlay.close()
