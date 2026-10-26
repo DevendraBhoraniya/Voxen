@@ -132,6 +132,41 @@ def apply_vocabulary_corrections(text: str, corrections: Dict[str, str]) -> Tupl
     return corrected, changed
 
 
+ALWAYS_CAPITALISE = {
+    "voxen": "Voxen",
+    "fastapi": "FastAPI",
+    "postgresql": "PostgreSQL",
+    "github": "GitHub",
+    "ollama": "Ollama",
+    "openai": "OpenAI",
+    "langchain": "LangChain",
+    "react": "React",
+    "next.js": "Next.js",
+    "nextjs": "Next.js",
+    "supabase": "Supabase",
+    "vercel": "Vercel",
+    "anthropic": "Anthropic",
+    "claude": "Claude",
+    "deepseek": "DeepSeek",
+    "pinecone": "Pinecone",
+    "typescript": "TypeScript",
+    "javascript": "JavaScript",
+    "python": "Python",
+}
+
+
+def fix_capitalisation(text: str) -> str:
+    import re
+    for lower, correct in ALWAYS_CAPITALISE.items():
+        text = re.sub(
+            rf"(?<!['\w]){re.escape(lower)}(?!['\w])",
+            correct,
+            text,
+            flags=re.IGNORECASE
+        )
+    return text
+
+
 def detect_hardware() -> Dict:
     """Detect available compute hardware and return optimal configuration."""
     has_cuda = False
