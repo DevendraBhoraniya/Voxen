@@ -23,6 +23,7 @@ temp_last_capture.wav
 last.wav
 bench_audio/
 test_speech.wav
+!test_speech.wav
 
 # Runtime artifacts
 *.pyc
