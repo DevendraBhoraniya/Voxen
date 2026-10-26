@@ -2,9 +2,16 @@
 
 **Snapshot date:** 2026-10-26  
 **Repo:** `F:\test\STT` (Windows 11, branch `master`, no git remote)  
-**State:** working tree is heavily uncommitted. The legacy `src/voxen/` tree, `tests/`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `requirements*.txt`, and `scripts/` are deleted in git, while the current flat modules are untracked. `git diff --stat` shows ~9,500 deletions and ~300 insertions. **Do not `git clean`, do not reset, and do not restore the old tree blindly.**
+**State:** clean working tree. Four commits on top of an initial VoiceBud import:
 
-This document describes the code that is actually on disk today, the measured behavior on this machine, the known defects, and a target architecture + migration plan for an upgrading agent.
+```
+651dda2  refactor: reorganize into voxen package with clean folder hierarchy
+6cd9ee1  fix: restore premium overlay and waveform tray icon
+3f164ad  feat: accent robustness (prompt + corrections + capitalisation)
+cad33dd  perf: tune Whisper (beam 2, best_of 1, tighter VAD padding)
+```
+
+This document describes the code on disk today, measured behavior on this machine, known defects, and a target architecture + migration plan.
 
 ---
 
@@ -13,10 +20,10 @@ This document describes the code that is actually on disk today, the measured be
 A fully local Windows dictation utility:
 
 - Global hotkey (`Ctrl+Shift`) starts/stops recording (toggle or hold mode).
-- Audio is captured from the microphone, converted to 16 kHz mono, transcribed locally, optionally refined by a local Ollama model, and pasted into the focused Windows application.
-- A frameless always-on-top “pill” overlay shows recording state and a live waveform.
+- Audio is captured, converted to 16 kHz mono, transcribed locally, optionally refined by a local Ollama model, and pasted into the focused Windows application.
+- A frameless always-on-top "pill" overlay shows recording state and a live waveform.
 - A system-tray menu switches microphone, STT model/engine, hotkey mode, cleanup, and overlay.
-- No cloud calls. The only network use is downloading models (Hugging Face) and optional `localhost` Ollama.
+- No cloud calls. Network use is limited to downloading models (Hugging Face) and optional `localhost` Ollama.
 
 ## 2. Runtime environment (measured)
 
@@ -28,19 +35,18 @@ A fully local Windows dictation utility:
 | GPU | NVIDIA GTX 1650 (4 GB) + AMD Radeon Vega 8 |
 | Python | 3.11.15 (uv-managed) |
 | Package manager | uv 0.11.15, venv at `.venv` |
-| CUDA status | `detect_hardware()` reports `has_cuda=True`, `cuda_usable=True`; `base.en` loads on CUDA float16 |
+| CUDA status | `detect_hardware()` reports `has_cuda=True`, `cuda_usable=False` (`cublas64_12.dll` not found) — **effectively CPU-only** |
 | Default input | `sd.default.device = [1, 4]` → idx 1 `Microphone Array (Realtek(R) Audio)` (MME, 44100 Hz, 2 ch) |
-| Resolved input | idx 1 Realtek array (the resolver now follows the Windows default) |
+| Resolved input | idx 1 Realtek array (resolver follows the Windows default) |
 
 Run commands:
 
 ```powershell
-.\.venv\Scripts\python.exe main.py          # launch app
-.\.venv\Scripts\python.exe -m py_compile audio.py transcribe.py main.py tray.py overlay.py
-uv sync                                     # WARNING: does not install whistle/moonshine engines (see §11)
+.\.venv\Scripts\python.exe -m voxen       # launch app
+uv run voxen                              # via entry point
+.\.venv\Scripts\python.exe -m py_compile voxen\*.py
+uv sync
 ```
-
-There is a `[project.scripts] voxen = "main:main"` entry point, but the built wheel is not installable as a package (see P0-1).
 
 ## 3. Dependency inventory
 
@@ -74,40 +80,55 @@ There is a `[project.scripts] voxen = "main:main"` entry point, but the built wh
 | needle | 3.2.8 | **installed manually, no distribution metadata, not in `uv.lock`** |
 | sherpa-onnx | 2.0.0 | **installed manually, not in `uv.lock`** |
 
-`needle` and `sherpa-onnx` are imported by `transcribe.py` for the optional Whistle and Moonshine engines. A clean `uv sync` will produce an environment where selecting those engines raises `ImportError`. They must become declared optional extras (or be removed).
+`needle` and `sherpa-onnx` are imported by `voxen/transcribe.py` for the optional Whistle and Moonshine engines. A clean `uv sync` will produce an environment where selecting those engines raises `ImportError`. They must become declared optional extras (or be removed).
 
 ### Model storage
 
-- Actual faster-whisper models live in the Hugging Face cache: `%USERPROFILE%\.cache\huggingface\hub` (~6.0 GB total on this machine).
+- Actual faster-whisper models live in the Hugging Face cache: `%USERPROFILE%\.cache\huggingface\hub` (~6.0 GB total).
 - `WhisperModel(...)` is constructed **without** `download_root`, so `%LOCALAPPDATA%\Voxen\models` (~291 MB, legacy) is stale and unused by current code.
-- Whistle (`models--Cactus-Compute--whistle`) and Moonshine (`models--csukuangfj--sherpa-onnx-moonshine-base-en-int8`) also live in the HF cache.
+- Whistle and Moonshine also live in the HF cache.
 - First run can require network access; there is no offline manifest, checksum, or progress UI.
 
-## 4. Repository map (current, flat layout)
+## 4. Repository map (current)
 
 ```
 F:\test\STT
-├─ main.py              # entry point, app controller, diagnostics, logging
-├─ audio.py             # device discovery, capture, DSP, recorder lifecycle
-├─ transcribe.py        # Whisper/Whistle/Moonshine engines, VAD, text cleanup
-├─ cleanup.py           # optional Ollama refinement + guardrails
-├─ inject.py            # clipboard save/paste/restore
-├─ hotkey.py            # pynput global hotkey
-├─ overlay.py           # PySide6 floating pill + waveform
-├─ tray.py              # PySide6 system tray menu
-├─ config.yaml          # runtime configuration (no schema)
-├─ pyproject.toml       # dependencies + broken wheel packaging
+├─ voxen/                      # Application package
+│  ├─ __init__.py             # Package metadata (__version__, __app_name__)
+│  ├─ __main__.py             # `python -m voxen` entry
+│  ├─ main.py                 # Controller, diagnostics, pipeline, logging
+│  ├─ config.py               # Config loading + correction merging
+│  ├─ audio.py                # Device discovery, capture, DSP, recorder lifecycle
+│  ├─ transcribe.py           # Whisper/Whistle/Moonshine engines, VAD, corrections
+│  ├─ cleanup.py              # Optional Ollama refinement + guardrails
+│  ├─ inject.py               # Clipboard save/paste/restore
+│  ├─ hotkey.py               # Global hotkey listener
+│  ├─ overlay.py              # PySide6 floating pill + waveform
+│  └─ tray.py                 # System tray icon and menu
+├─ tests/                     # Verification scripts
+│  ├─ test_accuracy_regression.py
+│  ├─ test_cleanup_formatting.py
+│  ├─ test_e2e.py
+│  ├─ test_regression_real_audio.py
+│  ├─ test_stream_recovery.py
+│  └─ test_ui_interactive.py
+├─ tools/                     # Benchmarking and diagnostics
+│  ├─ benchmark.py
+│  ├─ bench_models_vad.py
+│  └─ play_last_capture.py
+├─ docs/
+│  └─ ARCHITECTURE.md
+├─ config.yaml                # Runtime configuration (no schema)
+├─ pyproject.toml            # Dependencies + wheel packaging (packages = ["voxen"])
+├─ README.md
 ├─ uv.lock
-├─ README.md            # stale/mojibake in places
-├─ benchmark.py         # engine/VAD/WER bench harness
-├─ bench_models_vad.py  # tiny/base/large comparison
-├─ test_*.py            # script-style tests (asserts + prints)
-├─ bench_audio/         # 12 TTS WAVs + one extra, 22.05 kHz
-├─ test_speech.wav      # 22.05 kHz TTS control
-└─ temp_last_capture.wav# output of every take, in CWD (privacy issue)
+├─ .gitignore
+├─ bench_audio/               # 12 TTS WAVs + one extra, 22.05 kHz (gitignored)
+├─ temp_last_capture.wav      # output of every take, in CWD (gitignored, privacy issue)
+└─ .venv/                    # virtual environment (gitignored)
 ```
 
-There is no package directory, no `__init__.py`, no `src/` layout, no CI config, and no installer.
+There is no CI config, no installer, no `src/` layout beyond the flat `voxen/` package, and no single-instance guard.
 
 ## 5. Runtime architecture
 
@@ -118,7 +139,7 @@ There is no package directory, no `__init__.py`, no `src/` layout, no CI config,
 │ QApplication.event loop                                                     │
 │  ├─ FloatingPill (QWidget, timers, painting)                                │
 │  ├─ SystemTrayManager (QSystemTrayIcon + QMenu)                             │
-│  └─ VoxenApp (QObject controller; tray/hotkey signals)                   │
+│  └─ VoiceBudApp (QObject controller; tray/hotkey signals)                   │
 └───────────────▲───────────────────────────────┬────────────────────────────┘
                 │ Qt signals                    │ start/stop calls
 ┌───────────────┴──────────────┐   ┌────────────▼───────────────────────────┐
@@ -135,8 +156,8 @@ There is no package directory, no `__init__.py`, no `src/` layout, no CI config,
 ```
 
 - No worker pool, queue, cancellation, or backpressure. Each stop spawns a **new** daemon thread.
-- `_is_processing` is a plain bool used to reject a new take while one is being processed. It is not lock-protected.
-- The tray “STT Model” switch runs on the Qt thread and synchronously loads a model, freezing the UI.
+- `_is_processing` is a plain bool used to reject a new take while one is being processed.
+- The tray "STT Model" switch runs on the Qt thread and synchronously loads a model.
 - `self.transcriber` can be replaced by the tray while the pipeline thread is using it.
 
 ### 5.2 End-to-end data flow
@@ -162,9 +183,9 @@ Hotkey
   → transcriber.transcribe(audio)
       • Silence VAD (faster-whisper/Silero) → chunks ≤ 28 s at natural pauses
       • no speech → ""
-      • each chunk → Whisper (vad_filter=False), beam 5, temp 0
+      • each chunk → Whisper (vad_filter=False), beam 2, best_of 1, temp 0
       • collapse repeated n-grams
-      • regex vocabulary corrections
+      • regex vocabulary corrections + accent corrections + fix_capitalisation
   → optional OllamaCleaner.clean()
       • skipped under 10 words / 20 chars
       • similarity + vocabulary guardrails; raw text on any failure
@@ -176,55 +197,39 @@ Hotkey
 
 ### 5.3 Startup
 
-1. `main()` sets the Windows AppUserModelID.
-2. `load_config("config.yaml")` — resolves relative to the **current working directory**, not the script or install dir.
-3. `run_first_run_diagnostics()` prints CPU/GPU, configured engine/model, default mic, resolved capture device (warns if <16 kHz), Ollama status, hotkey.
-4. `QApplication` is created; tray icon pixmap is generated.
-5. `VoxenApp` constructs:
-   - `AudioRecorder` (no stream yet)
-   - `create_transcriber(...)` → loads the Whisper model on the Qt thread (10.7 s for CUDA `base.en` on this machine)
-   - `OllamaCleaner` (lazy connection)
-   - `FloatingPill`
-   - `SystemTrayManager` + signal wiring
-   - `HotkeyListener` (starts the global hook)
+1. `main()` sets the Windows AppUserModelID (`Voxen.Dictation.App.1.0`).
+2. `app_config.load_config("config.yaml")` — resolves relative to CWD.
+3. `run_first_run_diagnostics()` prints CPU/GPU, configured engine/model, default mic, resolved capture device (warns if <16 kHz or loopback), Ollama status, hotkey.
+4. `QApplication` created; tray icon pixmap generated.
+5. `VoxenApp` constructs: `AudioRecorder`, `create_transcriber(...)` (loads model on Qt thread), `OllamaCleaner`, `FloatingPill`, `SystemTrayManager`, `HotkeyListener`.
 6. `recorder.start_stream()` primes the 500 ms pre-roll stream and logs the mic in use.
-7. Tray toast: “Voxen Ready”.
+7. Tray toast: "Voxen Ready".
 
 ### 5.4 Shutdown
 
-`VoxenApp.quit()` stops the hotkey listener, stops an active take, calls `recorder.close()`, hides tray/overlay, and quits `QApplication`. Pipeline worker threads are daemon and are not joined.
+`VoxenApp.quit()` stops the hotkey listener, stops an active take, calls `recorder.close()`, hides tray/overlay, quits `QApplication`. Pipeline worker threads are daemon and are not joined.
 
 ## 6. Module contracts
 
-### `main.py`
+### `voxen/main.py`
 
-- **Logging:** console + `RotatingFileHandler` at `%LOCALAPPDATA%\Voxen\logs\voxen.log` (2 MB × 3). INFO level. **Raw transcripts are logged at INFO** (`[RAW WHISPER OUTPUT]`).
-- `load_config(path)` — YAML → dict, `{}` on error. No validation, no migration, no save.
-- `build_corrections(stt_cfg)` — merges `DEFAULT_CORRECTIONS` with user `replacements`, wrapping user keys in `(?i)\b…\b`.
+- **Logging:** console + `RotatingFileHandler` at `%LOCALAPPDATA%\Voxen\logs\voxen.log` (2 MB × 3). INFO level. Raw transcripts are logged at INFO (`[RAW WHISPER OUTPUT]`).
+- `app_config.load_config(path)` — YAML → dict, `{}` on error. No validation, no migration, no save.
+- `app_config.build_corrections(stt_cfg)` — merges `DEFAULT_CORRECTIONS` with user `replacements`, wrapping user keys in `(?i)\b…\b`.
 - `run_first_run_diagnostics(config)` — console summary only.
-- `VoxenApp(QObject)` — composition root and controller:
-  - `start_recording()` / `stop_recording()` / `toggle_recording()`
-  - `_process_pipeline(audio, duration)` — transcribe → clean → inject, logs latency breakdown
-  - `_on_device_changed(idx)` → `recorder.set_device(idx)`
-  - `_on_model_changed(key)` → rebuilds transcriber (whistle/moonshine/whisper)
-  - `_on_mode_changed`, `_on_cleanup_toggled`, `_on_overlay_toggled`
-  - `quit()`
-- Config changes made from the tray are applied in memory only; **nothing is written back to `config.yaml`**.
+- `VoxenApp(QObject)` — composition root and controller: `start_recording()`, `stop_recording()`, `toggle_recording()`, `_process_pipeline(audio, duration)`, tray/model/device/mode handlers, `quit()`.
+- Config changes made from the tray are applied in memory only; nothing is written back to `config.yaml`.
 
-### `audio.py`
+### `voxen/audio.py`
 
 Device helpers:
 
 - `refresh_audio_devices()` — terminates/re-initializes PortAudio.
-- `list_audio_devices(refresh=False)` — input-capable devices, excludes WDM-KS, marks `is_default`.
+- `list_audio_devices(refresh=False)` — input-capable devices, excludes WDM-KS **and loopback devices** (`is_loopback_device`).
 - `get_default_input_device()` — queries `sd.default.device[0]`.
-- `resolve_input_device(preferred_index=None, refresh=False, exclude=None)` — priority:
-  1. explicit index
-  2. Windows default input
-  3. headset/USB name fallback (DirectSound → WASAPI → any)
-  4. first usable device
-  Returns `(index, name, hostapi, default_samplerate, max_input_channels)`.
-  This order was fixed on 2026-10-25; the old order preferred name-matched headsets and caused narrowband captures.
+- `resolve_input_device(preferred_index=None, refresh=False, exclude=None)` — priority: explicit index → Windows default → headset/USB fallback → first usable. All candidates are filtered through `is_loopback_device`. Returns `(index, name, hostapi, default_samplerate, max_input_channels)`.
+- `is_loopback_device(name)` — keyword match against `LOOPBACK_KEYWORDS` (stereo mix, wave out, what u hear, loopback, vb-cable, cable output, virtual audio, wasapi loopback).
+- `LOOPBACK_KEYWORDS` — exported constant.
 
 DSP:
 
@@ -238,70 +243,65 @@ DSP:
 `AudioRecorder`:
 
 - Constructor: `sample_rate`, `channels`, `preroll_ms`, `device_index`, `silence_threshold_energy`, `target_rms_normalize`, `audio_level_callback`.
-- `start_stream()` — resolves device, opens `sd.InputStream` at **native** SR (not 16 k), monophonic (`min(1, max_ch)`), 30 ms blocksize, primes pre-roll. Warns for <16 kHz devices.
+- `start_stream()` — resolves device, opens `sd.InputStream` at **native** SR (not 16 k), monophonic, 30 ms blocksize, primes pre-roll. Warns for <16 kHz or loopback devices.
 - `start_recording()` — fast path reuses an active stream and prepends pre-roll; otherwise retries 3 times, excluding devices that failed.
 - `stop_recording()` — sets `_is_recording=False` under the lock, snapshots chunks, resamples → HPF → normalizes, computes status. **Keeps the stream open** for the next take.
 - `cancel_recording()` — drops chunks, keeps stream.
 - `close()` — releases the stream.
 - Status dict keys: `success`, `reason` (`ok`/`silent_speech`/`too_short`/`zero_samples`/`not_recording`), `is_silent`, `raw_rms`, `norm_rms`, `device`, `sample_rate`, `duration`, `wall_duration`, `chunks`, `wav_path`.
-- Level callback is invoked **only while recording**; it computes overall RMS + 24 sub-band bar levels.
+- Level callback is invoked **only while recording**.
 - Every successful take writes `temp_last_capture.wav` in CWD and `%LOCALAPPDATA%\Voxen\last.wav`.
 
-### `transcribe.py`
+### `voxen/transcribe.py`
 
 Top-level:
 
 - `setup_cuda_dlls()` — adds `site-packages/nvidia/*/bin` to DLL search path; runs at import.
 - Imports `faster_whisper.vad` at module import (requires `onnxruntime`).
 - `SR = 16000`, `MAX_CHUNK_S = 28`.
-- `speech_chunks(audio)` — Silero VAD (`max_speech_duration_s=25`, `min_silence_duration_ms=500`, `speech_pad_ms=250`), packs segments to ≤28 s. Returns:
-  - `list[np.ndarray]` when speech found
-  - `[]` when VAD found no speech
-  - `None` when VAD itself failed (caller transcribes full clip)
+- `speech_chunks(audio)` — Silero VAD (`max_speech_duration_s=25`, `min_silence_duration_ms=300`, `speech_pad_ms=100`), packs segments to ≤28 s. Returns `list[np.ndarray]` / `[]` / `None`.
 - `collapse_repeats(text)` — removes any phrase repeated 3+ times.
 - `apply_vocabulary_corrections(text, corrections)` — regex `subn` in dict order.
-- `DEFAULT_VOCABULARY`, `DEFAULT_INITIAL_PROMPT`, `DEFAULT_CORRECTIONS` (Voxen, GitHub, PostgreSQL, FastAPI, Ollama, RAG, API, …).
-- `detect_hardware()` — `ctranslate2.get_cuda_device_count()` + `cublas64_12.dll` load test; `cpu_threads = clamp(cores // 2, 1, 4)`. **`recommended_model` is stale:** `large-v3-turbo` on CUDA, `small.en` on CPU (small.en is slower than real time on this CPU).
+- `fix_capitalisation(text)` — case-normalizes technical terms using `ALWAYS_CAPITALISE` with negative lookaround (so `pythonic` is not changed).
+- `DEFAULT_VOCABULARY`, `DEFAULT_INITIAL_PROMPT` (accent-aware prompt mentioning Indian English and technical terms), `DEFAULT_CORRECTIONS` (brand, framework, accent/spoken-form patterns).
+- `detect_hardware()` — `ctranslate2.get_cuda_device_count()` + `cublas64_12.dll` load test; `cpu_threads = clamp(cores // 2, 1, 4)`. Recommended model: `large-v3-turbo` on CUDA, `base.en` on CPU.
 
 `WhisperTranscriber`:
 
-- Defaults: `model_name="base.en"`, `device="auto"`, `compute_type="auto"`, `cpu_threads=4`, `language="en"`, `vad_filter=True`, `beam_size=5`, `repetition_penalty=1.2`, `no_repeat_ngram_size=3`.
-- Loads CUDA float16 when `device=auto` and CUDA is usable, else CPU int8. Tries `local_files_only=True` first, then downloads. **No `download_root`.**
+- Defaults: `model_name="base.en"`, `device="auto"`, `compute_type="auto"`, `cpu_threads=4`, `language="en"`, `vad_filter=True`, `beam_size=2`, `best_of=1`, `repetition_penalty=1.2`, `no_repeat_ngram_size=3`.
+- Loads CUDA float16 when `device=auto` and CUDA is usable, else CPU int8. Tries `local_files_only=True` first, then downloads. No `download_root`.
 - `transcribe(audio)`:
   - returns `("", 0.0)` below RMS 0.001
   - VAD chunks; `None` → full clip with Whisper VAD; `[]` → `""`
   - pre-chunked audio → `vad_filter=False`
   - `condition_on_previous_text=False`, `temperature=0.0`, `no_speech_threshold=0.6`
   - vocabulary `initial_prompt`
-  - logs raw output; applies `collapse_repeats` + corrections
+  - logs raw output; applies `collapse_repeats` + corrections + `fix_capitalisation`
   - returns `(text, elapsed_seconds)`
 
 `WhistleTranscriber`:
 
 - `needle.Whistle()` (needle 3.2.8); native keyword biasing; no VAD.
-- `transcribe(audio, language, keywords)` → same post-processing.
-- 16.9 MB model, ~0.2-0.5 s on clean short audio, noticeably worse on real/accented mic audio.
 - Dependency not declared.
 
 `MoonshineTranscriber`:
 
 - `sherpa_onnx.OfflineRecognizer.from_moonshine(...)`, int8 ONNX.
-- Downloads five files from `csukuangfj/sherpa-onnx-moonshine-base-en-int8` via `hf_hub_download` **at construction** (network check on every startup unless cached).
+- Downloads five files from Hugging Face at construction.
 - Dependency not declared.
 
 `create_transcriber(...)` — factory: `whistle`/`cactus` → Whistle; `moonshine` → Moonshine; everything else → Whisper.
 
-### `cleanup.py`
+### `voxen/cleanup.py`
 
 - `OllamaCleaner` posts to `{base_url}/api/chat` (`stream=False`, `think=False`, `keep_alive`), timeout 4 s, temperature 0.1 then 0.0 retry.
 - Skips if disabled, fewer than 10 words, or <20 chars.
 - `is_online()` caches offline probes for 8 s.
 - Guardrails: word-overlap `difflib` similarity ≥ 0.8, vocabulary restoration, question/hallucination checks, sanitizer (no em dashes/curly quotes/markdown).
 - Returns raw text on any error/timeout/rejection.
-- `check_ollama_status()` and `check_model_parameters()` used by diagnostics.
 - **Note:** the module claims privacy-safe logging, but `main.py`/`transcribe.py` log raw transcripts at INFO.
 
-### `inject.py`
+### `voxen/inject.py`
 
 - `get_clipboard_text()` / `set_clipboard_text()` with retry (10 × 15 ms).
 - `release_modifier_keys()` releases Shift/Ctrl/Alt via `keybd_event`.
@@ -317,7 +317,7 @@ Top-level:
 - **Data-loss defect:** if the clipboard held an image/files/HTML, `prev_text is None`, and the `finally` block empties the clipboard, destroying the user's original content.
 - No UIPI/elevation handling; paste into elevated windows silently fails.
 
-### `hotkey.py`
+### `voxen/hotkey.py`
 
 - `pynput.keyboard.Listener` global hook.
 - `normalize_key()` maps modifiers and characters.
@@ -326,21 +326,23 @@ Top-level:
 - Callbacks run in fresh daemon threads.
 - Combination is parsed from config only; no tray rebinding, no conflict detection, no suppression of the hotkey in the target app.
 
-### `overlay.py`
+### `voxen/overlay.py`
 
 - `FloatingPill(QWidget)` — frameless, topmost, `Qt.Tool`, `WindowDoesNotAcceptFocus`, translucent background, `WA_ShowWithoutActivating`.
 - Re-applies `WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW` on every show.
 - Signals: `state_signal(str, str)`, `audio_signal(float, object)`, `hide_signal()`.
 - States rendered: `RECORDING`, `TRANSCRIBING`, `CLEANING`, `SUCCESS`, `ERROR`, `SILENT`.
-- `RealMicWaveformVisualizer` — 24 bars from `audio_signal`; decay timer; real RMS scaling.
+- `RealMicWaveformVisualizer` — bars from `audio_signal`; decay timer; real RMS scaling.
 - `LightweightSpinner` — rotating arc during processing.
 - Elapsed timer, auto-hide, drag-to-move, multi-monitor bottom-center positioning, DPI-aware.
+- Premium styling: `COLORS` design tokens, `QPropertyAnimation` for width transitions.
 - **Defect:** `nativeEvent()` uses `ctypes.wintypes.MSG` but `wintypes` is never imported. The exception is swallowed, so the `WM_MOUSEACTIVATE` guard is dead code (the `WS_EX_NOACTIVATE` path still works).
 
-### `tray.py`
+### `voxen/tray.py`
 
 - `SystemTrayManager(QObject)` signals: `toggle_recording_requested`, `mode_changed(str)`, `device_changed(object)`, `model_changed(str)`, `cleanup_toggled(bool)`, `overlay_toggled(bool)`, `quit_requested`.
-- Menu: header/hotkey, start/stop, Hotkey Mode (toggle/hold), Microphone (System Default + every input device, duplicates across MME/DirectSound/WASAPI), STT Model (whistle, moonshine, base.en, small.en, distil-large-v3, large-v3-turbo, tiny.en), Ollama cleanup toggle, overlay toggle, open config, quit.
+- Menu: header/hotkey, start/stop, Hotkey Mode (toggle/hold), Microphone (System Default + every input device), STT Model (whistle, moonshine, distil-small.en, base.en, small.en, distil-large-v3, large-v3-turbo, tiny.en), Ollama cleanup toggle, overlay toggle, open config, quit.
+- Tray icon: 5-bar waveform glyph (heights `[6, 12, 20, 12, 6]`), coral red when recording, electric azure when idle.
 - Tray mutations update `self.config` in memory only; **they are lost on restart**.
 - Model changes synchronously reconstruct the transcriber on the Qt thread.
 
@@ -355,10 +357,10 @@ stt:
   engine: faster-whisper
   model: base.en
   language: en
-  device: auto            # → CUDA float16 when usable
+  device: auto            # → CPU int8 (CUDA not usable on this machine)
   compute_type: auto
   cpu_threads: 4
-  beam_size: 5
+  beam_size: 2
   vocabulary: [~60 technical terms]
   replacements: {~15 ASR fixes}
 
@@ -403,17 +405,12 @@ Known config defects:
 - `inject.restore_clipboard` is never read.
 - `audio.sample_rate` does not set the capture rate.
 - Tray changes are not persisted.
-- No schema/validation/migration; defaults are duplicated across `main.py`, `tray.py`, `transcribe.py`, `audio.py`, `cleanup.py`, and `config.yaml`.
+- No schema/validation/migration; defaults are duplicated across modules.
 - Section aliases (`stt`/`transcription`, `llm`/`cleanup`) exist in code but not in the file.
 
 ## 7. State model (implicit)
 
-There is no explicit state machine. State is spread across:
-
-- `AudioRecorder._is_recording`
-- `VoxenApp._is_processing`
-- `SystemTrayManager` icon/action text
-- overlay string states
+There is no explicit state machine. State is spread across `AudioRecorder._is_recording`, `VoxenApp._is_processing`, tray icon/action text, and overlay string states.
 
 Effective transitions:
 
@@ -452,7 +449,7 @@ Invalid transitions are prevented only by ad-hoc bool checks. There is no cancel
 - Audio and full transcripts persist unencrypted.
 - Raw transcripts are logged at INFO.
 - The CWD WAV can land in Dropbox/OneDrive/Downloads if launched there.
-- No “delete after N minutes” or “never persist audio” switch.
+- No "delete after N minutes" or "never persist audio" switch.
 
 ## 9. Measured behavior baseline
 
@@ -461,71 +458,76 @@ Keep these as regression guards.
 ### Microphone
 
 - Windows default: Realtek array, MME, 44.1 kHz, 2 ch.
-- Resolver now returns idx 1, not the name-matched headset.
+- Resolver returns idx 1, not the name-matched headset or loopback device.
 - Live ambient capture on the Realtek array is full-band (4–8 kHz ≈ 25% of energy).
-- The old failing headset capture had ~97% of energy below 1 kHz and <0.3% above 4 kHz — unintelligible to any ASR.
+- The old failing headset capture had ~97% of energy below 1 kHz and <0.3% above 4 kHz.
 
 ### ASR accuracy
 
 - 12 clean TTS phrases (`bench_audio/p01…p12`):
-  - Whistle: 2 minor errors (e.g. “pasted” for “paste”).
+  - Whistle: 2 minor errors (e.g. "pasted" for "paste").
   - `base.en`: exact on the control phrase, 0% WER.
-- Known-good 37.3 s real take (`last.wav`, raw RMS 0.0051): coherent transcript with `base.en`; most errors are domain wording, not gibberish.
+- Known-good 37.3 s real take: coherent transcript with `base.en`.
+- Accent corrections + `fix_capitalisation` added; `pythonic` is not altered (negative lookaround verified).
 
-### Latency on this machine
+### Latency
 
 | Configuration | Audio | Time | Notes |
 |---|---|---|---|
-| `base.en` CPU int8 | 37.3 s | 11–16 s | RTF ~0.3–0.43 |
-| `base.en` CPU int8 | 3.4–3.6 s | 3.3–5.6 s | short clips pay a fixed per-call cost; RTF ~1.0–1.6 |
-| `base.en` CUDA float16 | 3.4–3.6 s | 1.8 s first, 0.7–0.8 s warm | model load 10.7 s at startup |
-| `base.en` CUDA float16 | 37.3 s | not measured | expected faster than CPU |
+| `base.en` CPU int8, beam 2 | 37.3 s | 4.5 s | RTF 0.12 |
+| `base.en` CPU int8, beam 2 | 11 s | 4.3 s | RTF 0.39 |
+| `base.en` CPU int8, beam 2 | 3.4 s | ~3.3–3.9 s | RTF ~1.0 |
+| `base.en` CPU int8, beam 5 | 37.3 s | 11–16 s | RTF 0.3–0.43 |
 | `small.en` CPU int8 | 37.3 s | 47–64 s | RTF >1; not viable |
 | Whistle CPU | 37.3 s | 14–24 s | worse on real audio |
-| Whistle CPU | short TTS | 0.2–0.5 s | |
+| `distil-small.en` CPU int8 | 3.4 s | ~13 s | 3–4× slower than base.en |
+| `distil-medium.en` CPU int8 | 37.3 s | 85.3 s | RTF 2.37; 20× slower |
+
+### Model benchmarks on this CPU
+
+Neither distil model is faster than `base.en` here. `base.en` remains the default. `distil-small.en` and `distil-medium.en` are available in the tray but not recommended.
 
 ## 10. Tests and benchmarks
 
-All tests are script-style (`python test_x.py`), with `assert` and prints. No pytest, no fixtures, no CI, no coverage, no markers for hardware.
+All tests are script-style (`python tests/test_x.py`), with `assert` and prints. No pytest, no fixtures, no CI, no coverage, no markers for hardware.
 
 | File | What it does | Dependencies |
 |---|---|---|
-| `test_stream_recovery.py` | device enumeration, invalid-device fallback, zero samples, stream persistence/close, hardware capture | real mic |
-| `test_accuracy_regression.py` | WER on TTS + control phrase, VAD on/off, tiny vs base | HF model |
-| `test_regression_real_audio.py` | WER on `temp_real_take_*.wav`, or `test_speech.wav` fallback | real takes; **does not resample 22.05 kHz fallback** |
-| `test_cleanup_formatting.py` | Ollama formatting/guardrails | live Ollama |
-| `test_e2e.py` | hardware → mic → STT → cleanup → Notepad injection | real mic, Notepad, Ollama optional |
-| `test_ui_interactive.py` | overlay flags, auto-hide, multi-monitor, waveform, focus | interactive GUI |
-| `benchmark.py` | CUDA check, VAD comparison, tiny/base WER/latency | bench_audio |
-| `bench_models_vad.py` | tiny/base/large × VAD | bench_audio |
+| `tests/test_stream_recovery.py` | device enumeration, invalid-device fallback, zero samples, stream persistence/close, hardware capture | real mic |
+| `tests/test_accuracy_regression.py` | WER on TTS + control phrase, VAD on/off, tiny vs base | HF model, `test_speech.wav` fixture |
+| `tests/test_regression_real_audio.py` | WER on `temp_real_take_*.wav`, or `bench_audio/p01.wav` fallback | real takes or bench fixture |
+| `tests/test_cleanup_formatting.py` | Ollama formatting/guardrails | live Ollama |
+| `tests/test_e2e.py` | hardware → mic → STT → cleanup → Notepad injection | real mic, Notepad, Ollama optional |
+| `tests/test_ui_interactive.py` | overlay flags, auto-hide, multi-monitor, waveform, focus | interactive GUI |
+| `tools/benchmark.py` | CUDA check, VAD comparison, tiny/base WER/latency | bench_audio |
+| `tools/bench_models_vad.py` | tiny/base/large × VAD | bench_audio |
 
-Verified on 2026-10-25/26:
+Verified on 2026-10-26:
 
 - `py_compile` clean for all current modules.
 - `test_accuracy_regression.py` → all pass; exact control transcript; 0% WER.
 - `test_stream_recovery.py` tests 1–4 → pass.
 - `uv build` succeeds but produces a broken wheel (see P0-1).
 - Config parses; correction merge works (case-insensitive user entries).
+- `fix_capitalisation` regex uses negative lookaround; `pythonic` is not altered.
 
 ## 11. Known defects and risks (ranked)
 
-### P0 — blocks “works properly” / release
+### P0 — blocks "works properly" / release
 
 1. **Wheel/package is broken.**
-   - `pyproject.toml` uses `[tool.hatch.build.targets.wheel] packages = ["."]`, which packs the repo root as `./audio.py`, `./main.py`, tests, `bench_audio/`, `temp_last_capture.wav`, `uv.lock`, etc.
-   - Installed files are not importable as a package; `voxen = "main:main"` cannot work from a normal install.
-   - No `src/` layout, no package namespace, no console-script test.
+   - `pyproject.toml` uses `packages = ["voxen"]` now (fixed), but the project has never been installed from a wheel and verified. `voxen = "voxen.main:main"` entry point exists. Needs a clean-venv smoke test.
+   - No `src/` layout, no package namespace beyond `voxen/`, no console-script test.
 2. **Optional engines are not reproducible.**
-   - `needle` and `sherpa-onnx` are imported by `transcribe.py` but absent from `pyproject.toml`/`uv.lock`.
-   - A clean `uv sync` breaks the Whistle and Moonshine tray options.
-   - `needle` has no distribution metadata in this venv, implying a manual install.
+   - `needle` and `sherpa-onnx` are imported by `voxen/transcribe.py` but absent from `pyproject.toml`/`uv.lock`.
+   - A clean `uv sync` will produce an environment where selecting those engines raises `ImportError`.
 3. **Config is inconsistent and not persisted.**
    - `inject:` vs `injection:` key mismatch; `restore_clipboard`, `sound_cues`, `audio.sample_rate` unused.
    - Tray/device/model/mode changes are lost on restart.
-   - No schema, no validation, no migration, defaults scattered in six files.
+   - No schema/validation/migration; defaults are duplicated across modules.
 4. **Clipboard data loss.**
    - `inject.py` snapshots only text; if the clipboard held an image/files/HTML, the `finally` block calls `EmptyClipboard()`, destroying it.
-   - Paste success is not verified; the pipeline ignores `inject_text`’s return value.
+   - Paste success is not verified; the pipeline ignores `inject_text`'s return value.
 5. **Privacy defaults.**
    - Every take is written to CWD and `%LOCALAPPDATA%`.
    - Raw transcripts are logged at INFO.
@@ -536,38 +538,38 @@ Verified on 2026-10-25/26:
 6. **No explicit state machine / worker queue.**
    - `_is_processing` is unsynchronized; model swaps can race with the pipeline; no cancellation; each stop spawns a thread.
 7. **Model switch freezes the UI and may download at runtime.**
-   - Synchronous load on the Qt thread; Whisper CUDA load ~10.7 s here; Moonshine calls HF at construction.
-8. **`detect_hardware()` recommends `small.en` on CPU**, which is slower than real time (RTF 1.3–1.7). Diagnostics can steer users to a bad default.
+   - Synchronous load on the Qt thread; Moonshine calls HF at construction.
+8. **`detect_hardware()` recommends `base.en` on CPU**, which is slower than real time on short clips (RTF ~1.0). Diagnostics can steer users to a bad default. (Updated from the stale `small.en` recommendation.)
 9. **Hotkey limitations.**
    - Fixed `Ctrl+Shift` by default, conflicts with common shortcuts; no conflict detection; no suppression; no per-app profiles; no runtime rebinding.
-   - Global hook + synthetic paste can race with the user’s physical modifiers; `release_modifier_keys()` is a workaround.
 10. **Injection robustness.**
     - `keybd_event` is legacy; no `SendInput`; no UIPI/elevation handling; no fallback to typing/UI Automation; no target-app awareness.
 11. **Overlay dead code.**
     - `ctypes.wintypes` is not imported in `overlay.py`; `nativeEvent` always throws internally, so `WM_MOUSEACTIVATE` suppression is inactive.
 12. **Audio device UX.**
-    - Tray lists every MME/DirectSound/WASAPI duplicate with the same name; no capability/quality info, no “test mic”, no hot-plug handling beyond retry, no narrowband warning in the menu.
+    - Tray lists every MME/DirectSound/WASAPI duplicate with the same name; no capability/quality info, no "test mic", no hot-plug handling beyond retry, no narrowband warning in the menu.
 13. **Test suite is not a safety net.**
     - No pytest, no CI, no unit tests for config/inject/hotkey/cleanup; tests need a mic, GUI, Ollama, and network.
-    - `test_regression_real_audio.py` feeds a 22.05 kHz file to a 16 kHz pipeline without resampling.
+    - `test_regression_real_audio.py` feeds a 22.05 kHz file to a 16 kHz pipeline without resampling (patched to use `bench_audio/p01.wav` fallback).
 14. **No single-instance guard / autostart / installer.**
-    - Two launches create two hooks and two tray icons.
 15. **No streaming/partial transcription.**
     - Batch-only; no live caption; no progressive paste.
 16. **No crash/diagnostics bundle.**
     - File log exists, but no version/env/device snapshot, no redaction, no export.
+17. **CUDA is not actually usable.**
+    - `cublas64_12.dll` is not on the system and no `nvidia` package is installed. `detect_hardware()` now correctly reports `cuda_usable=False`. The earlier `True` was a false positive. The app always runs on CPU.
 
 ### P2 — hygiene
 
-17. `README.md` contains mojibake and stale claims (e.g. “2 worker threads”, pre-cached models, file links).
-18. No `LICENSE` / `THIRD_PARTY_NOTICES.md` (PySide6 is LGPL; distribution needs compliance).
-19. `main.py` has unused imports; `play_sound_cue` is a no-op.
-20. `dist/` build artifact is reproducible but ignored; no signing/versioning policy.
-21. `*.log` is ignored, but `temp_last_capture.wav`, `last.wav`, `bench_audio/` results are not.
-22. Old `%LOCALAPPDATA%\Voxen\models` and HF cache duplicate models; no cleanup command.
-23. HF cache is ~6 GB because every experimented model remains cached.
-24. No `py.typed`, no type checking config, no linter/formatter config.
-25. No i18n; English-only models/prompts.
+18. `README.md` still contains mojibake in places and stale claims.
+19. No `LICENSE` / `THIRD_PARTY_NOTICES.md` (PySide6 is LGPL; distribution needs compliance).
+20. `main.py` has unused imports (`Signal`, `Slot`, `WhisperTranscriber`, `WhistleTranscriber`); `play_sound_cue` is a no-op.
+21. `dist/` build artifact is reproducible but ignored; no signing/versioning policy.
+22. `*.log` is ignored, but `temp_last_capture.wav`, `last.wav`, `bench_audio/` results are not (now ignored via updated `.gitignore`).
+23. Old `%LOCALAPPDATA%\Voxen\models` and HF cache duplicate models; no cleanup command.
+24. HF cache is ~6 GB because every experimented model remains cached.
+25. No `py.typed`, no type checking config, no linter/formatter config.
+26. No i18n; English-only models/prompts.
 
 ## 12. Target architecture (proposed)
 
@@ -656,7 +658,7 @@ Any state → FAILED → IDLE (with typed error + user-visible message)
 - Manifest per engine: files, SHA256, size, license, download URL.
 - Cache under `%LOCALAPPDATA%\Voxen\models\<engine>\<model>`; no reliance on ambient HF cache.
 - Atomic download + resume + progress events; offline mode uses cache only.
-- Warmup in the background after selection; show “loading” state.
+- Warmup in the background after selection; show "loading" state.
 - CPU/GPU policy: `base.en` default on CPU; benchmark `small.en` on CUDA before recommending; never recommend `small.en` on this CPU.
 
 ### Injection
@@ -689,8 +691,8 @@ Each phase must leave the app runnable and keep the current accuracy fixes.
 
 ### Phase 0 — Baseline & safety net (no behavior change)
 
-- Commit/tag the current working tree (including untracked flat modules) so the rewrite is reversible.
-- Add `pytest` and smoke tests for the pure functions: `resample_to_16k`, `remove_rumble`, `normalize_audio`, `speech_chunks`, `collapse_repeats`, `apply_vocabulary_corrections`, config merge.
+- Commit/tag the current working tree so the rewrite is reversible.
+- Add `pytest` and smoke tests for the pure functions: `resample_to_16k`, `remove_rumble`, `normalize_audio`, `speech_chunks`, `collapse_repeats`, `apply_vocabulary_corrections`, `fix_capitalisation`, config merge.
 - Add a golden test that transcribes `bench_audio/p01…p12` and asserts WER thresholds.
 - **Acceptance:** current app launches, tests pass, no functional diff.
 
@@ -721,16 +723,16 @@ Each phase must leave the app runnable and keep the current accuracy fixes.
 
 - Device capability probe (native SR, channels, host API, full-band check).
 - Prefer WASAPI shared/exclusive with fallback; dedupe tray device list by physical endpoint.
-- Hot-plug events; “test microphone” and live level meter in settings.
-- Stop writing WAVs by default; add explicit “keep last take”/debug option + retention.
+- Hot-plug events; "test microphone" and live level meter in settings.
+- Stop writing WAVs by default; add explicit "keep last take"/debug option + retention.
 - **Acceptance:** changing devices (USB/Bluetooth) works without restart; narrowband device warns; no audio files by default.
 
 ### Phase 5 — Accuracy & engine registry
 
 - Engine registry with lazy load, warmup, manifest, checksum, offline mode.
-- Fix `detect_hardware` recommendations; benchmark `small.en`/`distil` on CUDA before changing defaults.
+- Fix `detect_hardware` recommendations; benchmark `small.en` on CUDA before changing defaults.
 - Expand the bench set (real mic + accents + technical vocabulary) with per-engine WER.
-- Keep: follow Windows default mic, anti-aliased resampling, 50 Hz HPF, no double VAD, `base.en` CPU default.
+- Keep: follow Windows default mic, anti-aliased resampling, 50 Hz HPF, no double VAD, `base.en` CPU default, accent prompt + corrections + `fix_capitalisation`.
 - **Acceptance:** bench WER ≤ baseline on every engine; warm latency budget documented.
 
 ### Phase 6 — UX, settings, operations
@@ -750,19 +752,22 @@ Each phase must leave the app runnable and keep the current accuracy fixes.
 
 ```powershell
 # Compile
-.\.venv\Scripts\python.exe -m py_compile audio.py transcribe.py main.py tray.py overlay.py inject.py hotkey.py cleanup.py
+.\.venv\Scripts\python.exe -m py_compile voxen\*.py
 
-# Device resolution (must follow the Windows default)
-.\.venv\Scripts\python.exe -c "import sounddevice as sd; from audio import resolve_input_device; print(sd.default.device, resolve_input_device())"
+# Device resolution (must follow the Windows default, never loopback)
+.\.venv\Scripts\python.exe -c "import sounddevice as sd; from voxen.audio import resolve_input_device, is_loopback_device; print(sd.default.device, resolve_input_device()); print('loopback check:', is_loopback_device('Stereo Mix'))"
 
 # DSP invariants
-.\.venv\Scripts\python.exe -c "import wave,numpy as np; from audio import resample_to_16k; w=wave.open('test_speech.wav','rb'); sr=w.getframerate(); x=np.frombuffer(w.readframes(w.getnframes()),dtype=np.int16).astype(np.float32)/32768.; y=resample_to_16k(x,sr); print(len(x)/sr, len(y)/16000)"
+.\.venv\Scripts\python.exe -c "import wave,numpy as np; from voxen.audio import resample_to_16k; w=wave.open('bench_audio/p01.wav','rb'); sr=w.getframerate(); x=np.frombuffer(w.readframes(w.getnframes()),dtype=np.int16).astype(np.float32)/32768.; y=resample_to_16k(x,sr); print(len(x)/sr, len(y)/16000)"
 
 # Accuracy gate
-.\.venv\Scripts\python.exe test_accuracy_regression.py
+.\.venv\Scripts\python.exe tests\test_accuracy_regression.py
 
 # Stream lifecycle
-.\.venv\Scripts\python.exe test_stream_recovery.py
+.\.venv\Scripts\python.exe tests\test_stream_recovery.py
+
+# Capitalisation guard
+.\.venv\Scripts\python.exe -c "from voxen.transcribe import fix_capitalisation; print(fix_capitalisation('i use pythonic code and python'))"
 
 # Package install smoke test (after fixing packaging)
 uv build
@@ -771,29 +776,30 @@ uv build
 
 ## 15. Instructions for the next AI agent
 
-1. **Read this document and the current files before editing.** The old `src/voxen/` tree is deleted but still in git history; the current flat modules are the real code.
-2. **Never run `git clean -fdx`, `git reset --hard`, or delete untracked files.** The current implementation is untracked.
-3. **Preserve these correctness decisions** (they fixed the “every word is wrong” bug):
+1. **Read this document and the current files before editing.** The app is now a `voxen/` package; imports are relative inside the package and `voxen.*` from outside.
+2. **Never run `git clean -fdx`, `git reset --hard`, or delete untracked files.** The working tree is clean and committed.
+3. **Preserve these correctness decisions** (they fixed the "every word is wrong" bug):
    - Follow the Windows default microphone before name-keyword heuristics.
-   - Never select an 8 kHz telephony endpoint silently; warn on <16 kHz.
+   - Never select an 8 kHz telephony or loopback endpoint silently; warn on <16 kHz.
    - Re-prime the stream when the device changes.
    - Anti-aliased resampling to 16 kHz; 50 Hz high-pass; RMS normalization with gain cap.
    - No double VAD on VAD-chunked audio.
-   - `base.en` (not `tiny.en`, not `small.en`) is the CPU default; `beam_size=5`.
+   - `base.en` (not `tiny.en`, not `small.en`, not `distil-*`) is the CPU default; `beam_size=2`, `best_of=1`.
    - Merge built-in corrections with user replacements, case-insensitively.
+   - Accent prompt + spoken-form corrections + `fix_capitalisation` after corrections.
 4. **Keep the 16 kHz mono `float32` contract** at the `Transcriber` boundary.
 5. **Do not reintroduce raw transcript logging at INFO**; redact it behind a debug flag.
-6. **Do not claim a model is “recommended” without measuring RTF on this CPU.**
-7. Before changing defaults, run the accuracy gate and record WER + latency in the PR/commit.
-8. On this machine, CUDA works but model load is ~10.7 s; keep startup async when you refactor.
-9. The app has no remote. If you create commits, use Conventional Commits and keep the flat tree runnable until the package migration is complete.
+6. **Do not claim a model is "recommended" without measuring RTF on this CPU.** Both distil models were measured and are slower.
+7. Before changing defaults, run the accuracy gate and record WER + latency in the commit.
+8. On this machine, CUDA is **not** actually usable (`cublas64_12.dll` missing). Treat the app as CPU-only unless CUDA is fixed.
+9. The app has no remote. Use Conventional Commits and keep the package runnable until the migration is complete.
 10. Ask the owner before: changing the default engine/model, enabling audio retention, adding telemetry, or changing the install/distribution format.
 
 ## 16. Open decisions for the owner
 
-1. **Distribution:** portable folder, PyInstaller one-file, Inno Setup installer, or MSIX? (affects model storage and updates)
+1. **Distribution:** portable folder, PyInstaller one-file, Inno Setup installer, or MSIX?
 2. **Privacy:** keep the last take by default, or delete audio immediately and keep only transcripts?
-3. **Default engine on this machine:** `base.en` CPU (known good) vs `small.en` CUDA (needs benchmarking) vs `distil-large-v3`.
+3. **Default engine on this machine:** `base.en` CPU (known good) vs CUDA (needs cublas fix).
 4. **Streaming:** is partial/live captioning required, or is batch dictation enough?
 5. **Engine scope:** Whisper only, or keep Whistle/Moonshine/Parakeet as selectable plugins?
 6. **Multilingual:** English-only, or auto-detect?
@@ -804,13 +810,13 @@ uv build
 
 ### Appendix A — Current corrections
 
-`DEFAULT_CORRECTIONS` in `transcribe.py` covers: Voxen, FastAPI, PostgreSQL, GitHub, Claude Code, Ollama, API/APIs, RAG, agentic AI, vector database(s), plus several common mishearings. `config.yaml` adds Alima/Olama → Ollama, Gvector → pgvector, voice bot/voice but/voice bud → Voxen, fast api, post gres, postgres, github, claude code, agentic ai.
+`DEFAULT_CORRECTIONS` in `voxen/transcribe.py` covers: Voxen brand, FastAPI, PostgreSQL, GitHub, Claude Code, Ollama, API/APIs, RAG, agentic AI, vector database(s), plus spoken-form accent corrections (word press → WordPress, data base → database, end point → endpoint, back end → backend, front end → frontend, open a i / open ai → OpenAI, deep seek → DeepSeek, on a miss → Ollama, long chain / lang chain → LangChain, pin cone → Pinecone, n eight n → n8n, vox in / vox en / voice bud → Voxen). `config.yaml` adds Alima/Olama → Ollama, Gvector → pgvector, voice bot/voice but/voice bud → Voxen, fast api, post gres, postgres, github, claude code, agentic ai.
 
 ### Appendix B — Vocabulary prompt
 
-`stt.vocabulary` (~60 terms: Anthropic, Gemini, Qwen, Hugging Face, Cursor, LLM, RAG, retrieval, embeddings, vector database, Pinecone, pgvector, LangChain, LangGraph, LlamaIndex, MCP, agentic, fine-tuning, prompt engineering, n8n, Zapier, pandas, NumPy, scikit-learn, PyTorch, XGBoost, PostgreSQL, BigQuery, Databricks, dbt, Power BI, MLOps, MLflow, A/B testing, API, FastAPI, Streamlit, GCP, Supabase, Vercel, Apps Script, CRM, HubSpot, Airtable, ETL, SaaS, SMB, Voxen, Fable, Upwork, vidIQ, Gamma, AI consultancy, Claude, Claude Code, Codex, Ollama, agentic AI) is passed as:
+`stt.vocabulary` (~60 terms) is passed as:
 
-- Whisper `initial_prompt`
+- Whisper `initial_prompt` (accent-aware prompt mentioning Indian English and technical terms)
 - Whistle `keywords`
 - Ollama protected vocabulary
 - tray/UI metadata (indirectly)
@@ -822,9 +828,9 @@ uv build
 | reason | meaning | UI today |
 |---|---|---|
 | `ok` | speech captured | transcribe |
-| `silent_speech` | success but raw RMS below threshold | “No speech detected” |
-| `too_short` | <200 ms of audio | “Too short. Hold the hotkey…” |
-| `zero_samples` | no callback blocks | “Microphone Error” |
+| `silent_speech` | success but raw RMS below threshold | "No speech detected" |
+| `too_short` | <200 ms of audio | "Too short. Hold the hotkey…" |
+| `zero_samples` | no callback blocks | "Microphone Error" |
 | `not_recording` | stop without start | silent return |
 
-Pipeline failures are currently a single `except Exception` → “Error during dictation”; there is no typed error surface.
+Pipeline failures are currently a single `except Exception` → "Error during dictation"; there is no typed error surface.
