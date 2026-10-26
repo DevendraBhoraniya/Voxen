@@ -1,0 +1,171 @@
+# Voxen Configuration (Windows)
+# Fully offline speech-to-text dictation with pre-roll buffering, VAD chunking, and local LLM formatting.
+
+stt:
+  # STT Engine options:
+  #   - "faster-whisper": Whisper via CTranslate2. Most accurate on real microphones
+  #                       and accented speech. Runs on CPU (int8) or CUDA.
+  #   - "whistle": Cactus-Compute Whistle (16.9 MB, ~0.6s CPU latency). Very fast,
+  #                but noticeably weaker on accented/real-mic audio.
+  #   - "moonshine": Useful Sensors Moonshine via sherpa-onnx (~0.59s CPU latency).
+  engine: faster-whisper
+
+  # Model options for faster-whisper:
+  #   - "base.en":          145 MB, ~1.3-1.7s for a 10s clip on CPU  [RECOMMENDED CPU DEFAULT]
+  #   - "small.en":         460 MB, better accuracy but roughly real-time on CPU
+  #                         (use it only with a CUDA GPU)
+  #   - "distil-large-v3":  756 MB, distilled large-v3, needs CUDA to be fast
+  #   - "large-v3-turbo":   809 MB, ~3-6s on CUDA, OpenAI flagship turbo
+  # Accuracy vs speed: tiny.en mis-hears badly -- do not use it for dictation.
+  # (When engine is "whistle", model is "whistle.cact"; when "moonshine", model is "moonshine-base-en")
+  model: base.en
+
+  language: en                   # "en" avoids misdetecting language; null = auto-detect
+  device: auto                   # "cuda" (GTX 1650), "cpu", or "auto"
+  compute_type: auto             # "float16" on GPU, "int8" on CPU, or "auto"
+  cpu_threads: 4                 # 4 threads on 8-thread Ryzen CPU
+  beam_size: 2                   # 2 = fast beam search; negligible WER change on dictation
+  
+  # Names and jargon the model should spell right.
+  # Whisper only reads ~220 tokens of this (~60 terms). Top terms are placed LAST.
+  vocabulary:
+    # AI / LLM
+    - Anthropic
+    - Gemini
+    - Qwen
+    - Hugging Face
+    - Cursor
+    - LLM
+    - RAG
+    - retrieval
+    - embeddings
+    - vector database
+    - Pinecone
+    - pgvector
+    - LangChain
+    - LangGraph
+    - LlamaIndex
+    - MCP
+    - agentic
+    - fine-tuning
+    - prompt engineering
+    - n8n
+    - Zapier
+    # data science / engineering
+    - pandas
+    - NumPy
+    - scikit-learn
+    - PyTorch
+    - XGBoost
+    - PostgreSQL
+    - BigQuery
+    - Databricks
+    - dbt
+    - Power BI
+    - MLOps
+    - MLflow
+    - A/B testing
+    - API
+    - FastAPI
+    - Streamlit
+    - GCP
+    - Supabase
+    - Vercel
+    - Apps Script
+    # business
+    - CRM
+    - HubSpot
+    - Airtable
+    - ETL
+    - SaaS
+    - SMB
+    # most-used terms LAST: whisper weighs the end of this list most
+    - Voxen
+    - Fable
+    - Upwork
+    - vidIQ
+    - Gamma
+    - AI consultancy
+    - Claude
+    - Claude Code
+    - Codex
+    - Ollama
+    - agentic AI
+
+  # Fixed corrections for words whisper keeps mishearing (whole words, case-insensitive)
+  replacements:
+    Alima: Ollama
+    Olama: Ollama
+    Gvector: pgvector
+    voice bot: Voxen
+    voicebot: Voxen
+    Voice but: Voxen
+    Voicebut: Voxen
+    voice but: Voxen
+    voice bud: Voxen
+    fast api: FastAPI
+    post gres: PostgreSQL
+    postgres: PostgreSQL
+    github: GitHub
+    claude code: Claude Code
+    agentic ai: agentic AI
+
+llm:
+  enabled: false                 # Keep false during initial diagnosis; true to enable Ollama cleanup
+  model: llama3.2:3b             # or qwen2.5:3b / qwen3:4b-instruct
+  base_url: http://localhost:11434
+  temperature: 0.1
+  min_words_for_cleanup: 10      # Utterances under 10 words skip Ollama entirely (zero latency)
+  min_similarity: 0.8            # Below this word overlap, LLM reworded too much -> fall back to raw transcript
+  keep_alive: 30m                # Keep model in RAM so cleanup remains fast
+  system_prompt: |
+    You format dictated speech into clean written text. You are an editor, not a writer.
+    Rules:
+    - Remove filler words (um, uh, you know, "like" used as filler) and accidental repeated words.
+    - Fix punctuation and capitalization. Split run-on speech into proper sentences.
+    - Fix small grammar slips only (e.g. "things that gives" -> "things that give").
+    - Never change how a word is spelled, and never replace a word with a different one.
+    - Group sentences into paragraphs of 2 to 4 sentences, separated by a blank line.
+      Text of one or two sentences stays a single paragraph.
+    - If the text starts with a greeting (Hi X, Hello X, Dear X), put the greeting alone on
+      the first line. Put a sign-off (Thanks, Best, Cheers) alone on the last line.
+    - Keep every word the speaker said, in the same order, except fillers and accidental repeats.
+      Do NOT rephrase, summarize, answer, or add anything. If a phrase sounds wrong or unclear,
+      leave it exactly as spoken.
+    - Do not use em dashes, semicolons, bullet points or markdown.
+    - Output only the formatted text.
+  example_input: >-
+    hey sam um thanks for getting back to me so I had a look at the report and I think the
+    numbers look good but uh the second chart is a bit confusing because the the labels overlap
+    and you can't really tell which line is which so maybe we could just split it into two charts
+    anyway let me know when you're free to chat thanks
+  example_output: |-
+    Hey Sam,
+
+    Thanks for getting back to me. I had a look at the report and I think the numbers look good, but the second chart is a bit confusing because the labels overlap and you can't really tell which line is which.
+
+    So maybe we could just split it into two charts. Anyway, let me know when you're free to chat.
+
+    Thanks
+
+hotkey:
+  key: ctrl+shift
+  mode: toggle                   # toggle (press once to start, again to stop) | hold
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  preroll_ms: 500                # Ring buffer so the first word is never clipped
+  device_index: null             # null for auto-following active microphone
+  target_rms_normalize: 0.08     # Optimal Whisper RMS level
+  silence_threshold_energy: 0.0008
+
+inject:
+  method: paste                  # paste (clipboard + synthesized Ctrl+V)
+  restore_clipboard: true
+
+ui:
+  show_overlay: true
+  pill_position: bottom_center
+  pill_margin_bottom: 48
+  sound_cues: false

@@ -1,0 +1,33 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Local logs, captures and test audio (never commit user voice data)
+*.log
+*.wav
+temp_last_capture.wav
+last.wav
+bench_audio/
+test_speech.wav
+
+# Runtime artifacts
+*.pyc
+*.pyo
+
+# OS
+Thumbs.db
+.DS_Store
