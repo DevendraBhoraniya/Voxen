@@ -41,73 +41,80 @@ MA_NOACTIVATE = 3
 
 class RealMicWaveformVisualizer(QWidget):
     """
-    Renders 24 vertical waveform bars driven strictly by real microphone samples.
-    Uses interpolation + natural decay for smooth, jitter-free motion.
+    Renders ~11 vertical waveform bars driven by a smooth, time-based ambient
+    animation. Microphone RMS only subtly influences intensity; bars never
+    sit still and never flicker.
     """
 
-    _VARIATION = [0.92, 1.05, 0.97, 1.08, 0.94, 1.03, 0.99, 1.06, 0.95, 1.02,
-                  0.98, 1.04, 0.96, 1.01, 0.93, 1.07, 0.99, 1.05, 0.96, 1.02,
-                  0.97, 1.03, 0.95, 1.01]
+    NUM_BARS = 11
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(228, 32)
-        self.num_bars = 24
-        self.levels = [0.02] * self.num_bars
-        self._target_levels = [0.02] * self.num_bars
-        self._last_audio_ts = 0.0
+        self.setFixedSize(100, 32)
+        self.num_bars = self.NUM_BARS
+        self.levels = [0.35] * self.num_bars
+        self._envelope = 0.0          # smoothed mic level (0..1)
+        self._target_envelope = 0.0
+        self._start_ts = 0.0          # monotonic-ish start (time.time)
+        self._running = False
 
         self._timer = QTimer(self)
-        self._timer.setInterval(33)
-        self._timer.timeout.connect(self._step_decay)
+        self._timer.setInterval(33)   # ~30 FPS
+        self._timer.timeout.connect(self._step)
 
     def start(self):
-        self._last_audio_ts = time.time()
+        self._start_ts = time.time()
+        self._envelope = 0.0
+        self._target_envelope = 0.0
+        self.levels = [0.35] * self.num_bars
+        self._running = True
         self._timer.start()
 
     def stop(self):
+        self._running = False
         self._timer.stop()
-        self.levels = [0.02] * self.num_bars
-        self._target_levels = [0.02] * self.num_bars
+        self.levels = [0.25] * self.num_bars
+        self._target_envelope = 0.0
+        self._envelope = 0.0
         self.update()
 
     def update_real_audio(self, overall_rms: float, sub_levels=None):
-        now = time.time()
-        self._last_audio_ts = now
-        if sub_levels and len(sub_levels) == self.num_bars:
-            for i in range(self.num_bars):
-                raw = sub_levels[i]
-                var = self._VARIATION[i % len(self._VARIATION)]
-                self._target_levels[i] = max(0.02, min(1.0, raw * 2.2 * var))
-        else:
-            for i in range(self.num_bars):
-                dist = abs(i - (self.num_bars - 1) / 2.0) / (self.num_bars / 2.0)
-                factor = 1.0 - 0.5 * dist
-                var = self._VARIATION[i % len(self._VARIATION)]
-                self._target_levels[i] = max(0.02, min(1.0, overall_rms * factor * 3.5 * var))
+        # Smoothed envelope from real mic level (subtle influence only).
+        target = max(0.0, min(1.0, overall_rms * 4.0))
+        self._target_envelope = 0.7 * self._target_envelope + 0.3 * target
 
-        for i in range(self.num_bars):
-            tgt = self._target_levels[i]
-            if tgt > self.levels[i]:
-                self.levels[i] += (tgt - self.levels[i]) * 0.45
+    def _step(self):
+        if not self._running:
+            return
+        t = time.time() - self._start_ts
+        # Smooth envelope toward target.
+        self._envelope += (self._target_envelope - self._envelope) * 0.12
+        env = self._envelope
+        # Base intensity: ambient floor so bars always move, boosted by speech.
+        intensity = 0.28 + 0.42 * env
 
-    def _step_decay(self):
         changed = False
-        stale = (time.time() - self._last_audio_ts) > 0.12
         for i in range(self.num_bars):
-            target = self._target_levels[i]
-            if stale:
-                target = max(0.02, target * 0.85)
-                self._target_levels[i] = target
-            diff = target - self.levels[i]
-            if abs(diff) > 0.001:
-                self.levels[i] += diff * 0.35
-                changed = True
-            if self.levels[i] > 0.02:
-                self.levels[i] = max(0.02, self.levels[i] - 0.004)
-                changed = True
+            # Smooth combination of sine waves with different freq/phase.
+            phase = i * 0.7
+            wave = (
+                0.55 * math.sin(t * 2.1 + phase) +
+                0.30 * math.sin(t * 3.4 + phase * 1.7) +
+                0.15 * math.sin(t * 1.3 + phase * 0.6)
+            )
+            # Normalize wave to 0..1 range.
+            norm = (wave + 1.0) / 2.0
+            # Per-bar height variation (deterministic, subtle).
+            var = 0.85 + 0.15 * ((i * 7) % 5) / 4.0
+            target_h = 0.18 + intensity * norm * var
+            target_h = max(0.12, min(0.92, target_h))
+            # Smooth interpolation toward target.
+            self.levels[i] += (target_h - self.levels[i]) * 0.28
+            if self.levels[i] < 0.12:
+                self.levels[i] = 0.12
+            changed = True
 
-        if changed or any(lvl > 0.03 for lvl in self.levels):
+        if changed:
             self.update()
 
     def paintEvent(self, event):
@@ -116,22 +123,21 @@ class RealMicWaveformVisualizer(QWidget):
 
         w = self.width()
         h = self.height()
-        bar_w = 6.0
-        gap = 3.0
+        bar_w = 4.0
+        gap = 4.0
         total_w = self.num_bars * bar_w + (self.num_bars - 1) * gap
         start_x = (w - total_w) / 2.0
 
-        purple_brush = QBrush(QColor(163, 107, 255))  # #A36BFF from reference
-        painter.setBrush(purple_brush)
+        brush = QBrush(QColor(163, 107, 255))  # #A36BFF
+        painter.setBrush(brush)
         painter.setPen(Qt.NoPen)
 
         for i in range(self.num_bars):
             lvl = self.levels[i]
-            # Height between 4px and max height
             bar_h = max(4.0, lvl * (h - 4.0))
             x = start_x + i * (bar_w + gap)
             y = (h - bar_h) / 2.0
-            painter.drawRoundedRect(QRectF(x, y, bar_w, bar_h), bar_w / 2.0, bar_w / 2.0)
+            painter.drawRoundedRect(QRectF(x, y, bar_w, bar_h), 2.0, 2.0)
 
 
 class LightweightSpinner(QWidget):
