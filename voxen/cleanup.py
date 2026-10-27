@@ -396,3 +396,98 @@ class OllamaCleaner:
 
 # Alias matching reference repository
 Cleaner = OllamaCleaner
+
+
+# ── Qwen local cleanup engine ────────────────────────────────────────────────
+
+import os
+from pathlib import Path
+
+_QWEN_MODEL_PATH = (
+    Path(os.environ["LOCALAPPDATA"]) / "Voxen" / "models" / "qwen"
+    / "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+)
+
+_SYSTEM_PROMPT = (
+    "You are a dictation cleanup assistant.\n"
+    "Rules:\n"
+    "1. Keep only the FINAL intended version when the speaker corrects themselves.\n"
+    "   Example: 'meeting at 8 no no 9 PM' → 'meeting at 9 PM'\n"
+    "2. Remove filler words: um, uh, like, you know, okay so, I mean.\n"
+    "3. Remove abandoned false starts.\n"
+    "4. Add correct punctuation and capitalisation.\n"
+    "5. Do NOT add or invent any information.\n"
+    "6. Output ONLY the cleaned text. No explanation.\n"
+    "7. Keep all technical terms exactly as given.\n"
+    "8. If already clean, return it unchanged."
+)
+
+
+class LlamaCleaner:
+    """
+    Fast offline semantic cleanup using Qwen2.5-0.5B-Instruct (Q4_K_M GGUF).
+
+    Removes self-corrections, filler words, false starts.
+    Adds punctuation and capitalisation.
+
+    RAM:   ~400 MB
+    Speed: ~0.3–0.8s per clip on CPU
+    Setup: run tools/setup_cleanup_model.py once to download the model.
+    """
+
+    MIN_WORDS = 4   # skip cleanup for very short clips
+
+    def __init__(self):
+        self._llm = None
+        self._available = False
+        self._try_load()
+
+    def _try_load(self) -> None:
+        if not _QWEN_MODEL_PATH.exists():
+            return
+        try:
+            from llama_cpp import Llama
+            self._llm = Llama(
+                model_path=str(_QWEN_MODEL_PATH),
+                n_ctx=512,
+                n_threads=4,
+                n_gpu_layers=0,   # CPU only
+                verbose=False,
+                use_mlock=False,
+            )
+            self._available = True
+        except Exception as exc:
+            logger.warning(f"LlamaCleaner failed to load: {exc}")
+
+    @property
+    def is_available(self) -> bool:
+        return self._available
+
+    def clean(self, text: str) -> str:
+        """
+        Clean raw transcript. Returns original text on any failure.
+        Never raises.
+        """
+        if not self._available:
+            return text
+        if not text or len(text.split()) < self.MIN_WORDS:
+            return text
+        try:
+            resp = self._llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user",   "content": text},
+                ],
+                max_tokens=256,
+                temperature=0.0,
+                top_p=1.0,
+                stop=["<|im_end|>", "\n\n"],
+            )
+            cleaned = resp["choices"][0]["message"]["content"].strip()
+            # Safety: if output is empty or suspiciously long, return original
+            if not cleaned or len(cleaned) > len(text) * 2.5:
+                return text
+            return cleaned
+        except Exception as exc:
+            logger.warning(f"LlamaCleaner.clean failed: {exc}")
+            return text

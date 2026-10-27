@@ -9,6 +9,7 @@ authors = [
 ]
 dependencies = [
     "faster-whisper>=1.0.0",
+    "huggingface-hub>=0.20.0",
     "numpy>=1.26.0",
     "pynput>=1.8.0",
     "pyside6>=6.6.0",
@@ -17,6 +18,9 @@ dependencies = [
     "requests>=2.31.0",
     "sounddevice>=0.4.6",
 ]
+
+[project.optional-dependencies]
+llama = ["llama-cpp-python>=0.3.0"]
 
 [project.scripts]
 voxen = "voxen.main:main"

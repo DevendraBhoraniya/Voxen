@@ -112,6 +112,7 @@ stt:
 
 llm:
   enabled: false                 # Keep false during initial diagnosis; true to enable Ollama cleanup
+  llama_cleanup: true            # Use local Qwen2.5-0.5B for fast offline semantic cleanup
   model: llama3.2:3b             # or qwen2.5:3b / qwen3:4b-instruct
   base_url: http://localhost:11434
   temperature: 0.1

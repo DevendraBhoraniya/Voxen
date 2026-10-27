@@ -32,7 +32,7 @@ from .transcribe import (
     create_transcriber,
     detect_hardware,
 )
-from .cleanup import OllamaCleaner, check_ollama_status
+from .cleanup import OllamaCleaner, LlamaCleaner, check_ollama_status
 from . import inject
 from .overlay import FloatingPill
 from .settings_window import SettingsWindow
@@ -119,6 +119,13 @@ def run_first_run_diagnostics(config: Dict):
         print(f"[*] Ollama Status:        Offline/Not Running ({ollama_info['error']})")
         print("    -> Note: Voxen will run fully local Whisper STT without cleanup delay.")
 
+    # 3b. LlamaCleaner (Qwen2.5-0.5B local) Status
+    from .cleanup import _QWEN_MODEL_PATH
+    if _QWEN_MODEL_PATH.exists():
+        print("[*] Cleanup Engine:       Qwen2.5-0.5B (local) — ready")
+    else:
+        print("[*] Cleanup Engine:       Not available — run: python tools/setup_cleanup_model.py")
+
     # 4. Hotkey info
     hotkey_cfg = config.get("hotkey", {})
     combo = hotkey_cfg.get("combination", "ctrl+shift")
@@ -176,6 +183,13 @@ class VoxenApp(QObject):
             remove_fillers=clean_cfg.get("remove_fillers", True),
             system_prompt=clean_cfg.get("system_prompt", None)
         )
+
+        # 3b. Initialize LlamaCleaner (Qwen2.5-0.5B, fast local semantic cleanup)
+        self._llama_cleaner = LlamaCleaner()
+        if self._llama_cleaner.is_available:
+            logger.info("LlamaCleaner ready (Qwen2.5-0.5B)")
+        else:
+            logger.info("LlamaCleaner not available — run tools/setup_cleanup_model.py")
 
         # 4. Initialize Overlay Pill
         ui_cfg = self.config.get("ui", {})
@@ -499,8 +513,16 @@ class VoxenApp(QObject):
             final_text = raw_text
             cleanup_dur = 0.0
 
-            # 2. Optional Ollama Cleanup
-            if self.cleaner.enabled:
+            # 2. Cleanup priority: LlamaCleaner (fast, local) → OllamaCleaner (server) → skip
+            clean_cfg = self.config.get("llm") or self.config.get("cleanup", {})
+            llama_cleanup_enabled = clean_cfg.get("llama_cleanup", True)
+            if llama_cleanup_enabled and self._llama_cleaner.is_available:
+                if self.config.get("ui", {}).get("show_overlay", True):
+                    self.overlay.state_signal.emit("CLEANING", "Refining text...")
+                t_clean = time.time()
+                final_text = self._llama_cleaner.clean(raw_text)
+                cleanup_dur = time.time() - t_clean
+            elif self.cleaner.enabled and self.cleaner.is_online():
                 if self.config.get("ui", {}).get("show_overlay", True):
                     self.overlay.state_signal.emit("CLEANING", "Refining text...")
                 t_clean = time.time()
