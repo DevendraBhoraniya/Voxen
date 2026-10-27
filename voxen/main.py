@@ -153,24 +153,14 @@ class VoxenApp(QObject):
             audio_level_callback=self._on_audio_level
         )
 
-        # 2. Initialize STT Transcriber (Whistle or faster-whisper)
-        stt_cfg = self.config.get("stt") or self.config.get("transcription", {})
-        vocab = stt_cfg.get("vocabulary") or []
-        prompt = ", ".join(vocab) + "." if vocab else stt_cfg.get("initial_prompt", None)
-
-        replacements = stt_cfg.get("replacements") or stt_cfg.get("corrections", None)
-        correction_dict = app_config.build_corrections(stt_cfg)
-
-        # Model is loaded asynchronously so the UI appears immediately.
+        # 2. Transcriber starts as None — loaded asynchronously to avoid
+        #    blocking the Qt event loop for ~6s on startup.
         self.transcriber = None
-        self._transcriber = None
-        self._stt_cfg = stt_cfg
-        self._stt_vocab = vocab
-        self._stt_prompt = prompt
-        self._stt_correction_dict = correction_dict
 
         # 3. Initialize Ollama Cleaner
         clean_cfg = self.config.get("llm") or self.config.get("cleanup", {})
+        stt_cfg = self.config.get("stt") or self.config.get("transcription", {})
+        vocab = stt_cfg.get("vocabulary") or []
         self.cleaner = OllamaCleaner(
             enabled=clean_cfg.get("enabled", False),
             endpoint=clean_cfg.get("base_url", clean_cfg.get("endpoint", "http://127.0.0.1:11434")),
@@ -193,6 +183,13 @@ class VoxenApp(QObject):
             position=ui_cfg.get("pill_position", "bottom_center"),
             margin_bottom=ui_cfg.get("pill_margin_bottom", 48)
         )
+        # Show loading state while model loads in background
+        if self.config.get("ui", {}).get("show_overlay", True):
+            self.overlay.state_signal.emit("TRANSCRIBING", "Loading model...")
+
+        # Connect async model load signals
+        self.model_ready.connect(self._on_model_ready)
+        self.model_load_failed.connect(self._on_model_load_failed)
 
         # 5. Initialize System Tray
         self.tray = SystemTrayManager(
@@ -201,8 +198,6 @@ class VoxenApp(QObject):
             on_open_settings=self._open_settings_window
         )
         self._connect_tray_signals()
-        self.model_ready.connect(self._on_model_ready)
-        self.model_load_failed.connect(self._on_model_load_failed)
         self.tray.show()
 
         # 6. Initialize Global Hotkey Listener
@@ -225,17 +220,15 @@ class VoxenApp(QObject):
             f"at {self.recorder.active_sample_rate} Hz x{self.recorder.active_channels} ch"
         )
 
-        # 8. Show loading state and kick off async model load
-        if self.config.get("ui", {}).get("show_overlay", True):
-            self.overlay.state_signal.emit("TRANSCRIBING", "Loading model...")
-        threading.Thread(target=self._load_model_async, daemon=True, name="voxen-model-loader").start()
-
         # Startup notification
         combo_name = str(hotkey_key).upper()
         self.tray.show_message(
             "Voxen Ready",
             f"Press {combo_name} to dictate into any Windows application."
         )
+
+        # 8. Load STT model asynchronously so UI appears instantly
+        threading.Thread(target=self._load_model_async, daemon=True).start()
 
     def _connect_tray_signals(self):
         self.tray.toggle_recording_requested.connect(self.toggle_recording)
@@ -245,6 +238,50 @@ class VoxenApp(QObject):
         self.tray.cleanup_toggled.connect(self._on_cleanup_toggled)
         self.tray.overlay_toggled.connect(self._on_overlay_toggled)
         self.tray.quit_requested.connect(self.quit)
+
+    def _load_model_async(self):
+        """Runs in a daemon thread. Loads the transcriber then signals ready."""
+        try:
+            stt_cfg = self.config.get("stt") or self.config.get("transcription", {})
+            vocab = stt_cfg.get("vocabulary") or []
+            prompt = ", ".join(vocab) + "." if vocab else stt_cfg.get("initial_prompt", None)
+            correction_dict = app_config.build_corrections(stt_cfg)
+
+            t = create_transcriber(
+                engine=stt_cfg.get("engine", "faster-whisper"),
+                model_name=stt_cfg.get("model", stt_cfg.get("model_name", "base.en")),
+                device=stt_cfg.get("device", "auto"),
+                compute_type=stt_cfg.get("compute_type", "auto"),
+                cpu_threads=stt_cfg.get("cpu_threads", 4),
+                language=stt_cfg.get("language", "en"),
+                vad_filter=stt_cfg.get("vad_filter", True),
+                beam_size=stt_cfg.get("beam_size", 5),
+                initial_prompt=prompt,
+                vocabulary=vocab,
+                corrections=correction_dict,
+            )
+            # Warm up: run a silent 0.1s clip so first real take is faster
+            import numpy as np
+            dummy = np.zeros(1600, dtype=np.float32)
+            try:
+                t.transcribe(dummy)
+            except Exception:
+                pass
+            self.transcriber = t
+            # Signal UI on Qt thread
+            self.model_ready.emit()
+        except Exception as exc:
+            self.model_load_failed.emit(str(exc))
+
+    def _on_model_ready(self):
+        if self.config.get("ui", {}).get("show_overlay", True):
+            self.overlay.state_signal.emit("IDLE", "Ready")
+        logger.info("Model ready.")
+
+    def _on_model_load_failed(self, err):
+        if self.config.get("ui", {}).get("show_overlay", True):
+            self.overlay.state_signal.emit("ERROR", "Model load failed")
+        logger.error(f"Model failed to load: {err}")
 
     def _open_config_file(self):
         """Open config.yaml in Windows default editor."""
@@ -280,10 +317,6 @@ class VoxenApp(QObject):
 
     def _on_model_changed(self, model_key: str):
         """Switch speech recognition model/engine on the fly."""
-        if self._transcriber is None:
-            logger.info("Model still loading; ignoring model switch request.")
-            self.tray.show_message("Model Loading", "Please wait for the model to finish loading.")
-            return
         stt_cfg = self.config.setdefault("stt", {})
         vocab = stt_cfg.get("vocabulary") or []
         prompt = ", ".join(vocab) + "." if vocab else stt_cfg.get("initial_prompt", None)
@@ -362,8 +395,6 @@ class VoxenApp(QObject):
 
     def toggle_recording(self):
         """Toggle dictation state."""
-        if self._transcriber is None:
-            return
         with self._lock:
             if self.recorder.is_recording:
                 self.stop_recording()
@@ -372,12 +403,12 @@ class VoxenApp(QObject):
 
     def start_recording(self):
         """Begin audio capture using robust recovery strategy."""
-        if self._transcriber is None:
-            logger.info("Model still loading; ignoring record request.")
-            if self.config.get("ui", {}).get("show_overlay", True):
-                self.overlay.state_signal.emit("TRANSCRIBING", "Loading model...")
-            return
         if self._is_processing or self.recorder.is_recording:
+            return
+
+        # Ignore hotkey presses while model is still loading
+        if self.transcriber is None:
+            logger.warning("Hotkey pressed while model is still loading — ignoring.")
             return
 
         logger.info("Starting dictation recording...")
@@ -449,14 +480,14 @@ class VoxenApp(QObject):
 
     def _process_pipeline(self, audio, duration):
         """Background worker for STT, optional Ollama cleanup, and injection."""
-        if self._transcriber is None:
-            logger.warning("Transcriber not ready yet.")
-            if self.config.get("ui", {}).get("show_overlay", True):
-                self.overlay.state_signal.emit("ERROR", "Model not ready")
-            self._is_processing = False
-            return
         t_pipeline_start = time.time()
         try:
+            if self.transcriber is None:
+                logger.warning("Transcriber not ready yet.")
+                if self.config.get("ui", {}).get("show_overlay", True):
+                    self.overlay.state_signal.emit("ERROR", "Model not loaded")
+                return
+
             # 1. Transcribe with local faster-whisper
             raw_text, stt_dur = self.transcriber.transcribe(audio)
 
@@ -505,47 +536,6 @@ class VoxenApp(QObject):
                 self.overlay.state_signal.emit("ERROR", "Error during dictation")
         finally:
             self._is_processing = False
-
-    def _load_model_async(self):
-        """Runs in a daemon thread. Loads the transcriber then signals ready."""
-        try:
-            stt_cfg = self._stt_cfg
-            t = create_transcriber(
-                engine=stt_cfg.get("engine", "faster-whisper"),
-                model_name=stt_cfg.get("model", stt_cfg.get("model_name", "base.en")),
-                device=stt_cfg.get("device", "auto"),
-                compute_type=stt_cfg.get("compute_type", "auto"),
-                cpu_threads=stt_cfg.get("cpu_threads", 4),
-                language=stt_cfg.get("language", "en"),
-                vad_filter=stt_cfg.get("vad_filter", True),
-                beam_size=stt_cfg.get("beam_size", 2),
-                initial_prompt=self._stt_prompt,
-                vocabulary=self._stt_vocab,
-                corrections=self._stt_correction_dict,
-            )
-            # Warm up: run a silent 0.1s clip so first real take is faster
-            import numpy as np
-            dummy = np.zeros(1600, dtype=np.float32)
-            try:
-                t.transcribe(dummy)
-            except Exception:
-                pass
-            self._transcriber = t
-            self.transcriber = t
-            self.model_ready.emit()
-        except Exception as exc:
-            logger.error(f"Model load failed: {exc}", exc_info=True)
-            self.model_load_failed.emit(str(exc))
-
-    def _on_model_ready(self):
-        if self.config.get("ui", {}).get("show_overlay", True):
-            self.overlay.state_signal.emit("IDLE", "")
-        logger.info("Model ready.")
-
-    def _on_model_load_failed(self, err):
-        if self.config.get("ui", {}).get("show_overlay", True):
-            self.overlay.state_signal.emit("ERROR", "Model failed to load")
-        logger.error(f"Model failed to load: {err}")
 
     def quit(self):
         """Clean shutdown."""
