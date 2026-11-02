@@ -213,9 +213,12 @@ class VoxenApp(QObject):
         )
 
         # 3b. Initialize LlamaCleaner (Qwen2.5-0.5B, fast local semantic cleanup)
-        self._llama_cleaner = LlamaCleaner()
+        clean_threads = clean_cfg.get("cleanup_threads", None)
+        self._llama_cleaner = LlamaCleaner(n_threads=clean_threads)
         if self._llama_cleaner.is_available:
-            logger.info("LlamaCleaner ready (Qwen2.5-0.5B)")
+            logger.info(f"LlamaCleaner ready (Qwen2.5-0.5B, threads={self._llama_cleaner._n_threads})")
+            # Warm up model at startup to avoid cold-start latency on first dictation
+            self._llama_cleaner.warmup()
         else:
             logger.info("LlamaCleaner not available — run tools/setup_cleanup_model.py")
 
@@ -549,7 +552,7 @@ class VoxenApp(QObject):
                 if self.config.get("ui", {}).get("show_overlay", True):
                     self.overlay.state_signal.emit("CLEANING", "Refining text...")
                 t_clean = time.time()
-                final_text = self._llama_cleaner.clean(raw_text)
+                final_text = self._llama_cleaner.clean(raw_text, getattr(self.transcriber, "last_avg_logprob", -1.0))
                 cleanup_dur = time.time() - t_clean
             elif self.cleaner.enabled and self.cleaner.is_online():
                 if self.config.get("ui", {}).get("show_overlay", True):

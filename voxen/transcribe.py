@@ -253,6 +253,7 @@ class WhisperTranscriber:
         self.initial_prompt = initial_prompt
         self.corrections = corrections if corrections is not None else dict(DEFAULT_CORRECTIONS)
         self.last_raw_transcript = ""
+        self.last_avg_logprob = -1.0
 
         self.actual_device = "cpu"
         self.actual_compute = "int8"
@@ -374,6 +375,7 @@ class WhisperTranscriber:
                 kwargs["vad_filter"] = False
 
             texts = []
+            logprobs = []
             for chunk in chunks:
                 if len(chunk) == 0:
                     continue
@@ -382,10 +384,14 @@ class WhisperTranscriber:
                     t = seg.text.strip()
                     if t:
                         texts.append(t)
+                        logprobs.append(seg.avg_logprob)
                         logger.debug(
                             f"Segment [{seg.start:.2f}s - {seg.end:.2f}s] "
                             f"(avg_logprob: {seg.avg_logprob:.3f}, no_speech_prob: {seg.no_speech_prob:.3f}): '{t}'"
                         )
+
+            # Track average logprob for cleanup skip decision
+            self.last_avg_logprob = (sum(logprobs) / len(logprobs)) if logprobs else -1.0
 
             raw_transcript = " ".join(texts).strip()
             self.last_raw_transcript = raw_transcript

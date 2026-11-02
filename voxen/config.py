@@ -60,6 +60,12 @@ def _validate_config(data: Dict) -> Dict:
         data["llm"] = llm
     if "llama_cleanup" in llm and not isinstance(llm["llama_cleanup"], bool):
         llm["llama_cleanup"] = bool(llm["llama_cleanup"])
+    if "cleanup_threads" in llm:
+        try:
+            ct = int(llm["cleanup_threads"])
+            llm["cleanup_threads"] = max(1, min(16, ct))
+        except (TypeError, ValueError):
+            llm["cleanup_threads"] = max(1, (os.cpu_count() or 4) // 2)
 
     return data
 

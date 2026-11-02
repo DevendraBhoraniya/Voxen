@@ -437,9 +437,12 @@ class LlamaCleaner:
 
     MIN_WORDS = 4   # skip cleanup for very short clips
 
-    def __init__(self):
+    def __init__(self, n_threads=None):
         self._llm = None
         self._available = False
+        if n_threads is None:
+            n_threads = max(1, (os.cpu_count() or 4) // 2)
+        self._n_threads = n_threads
         self._try_load()
 
     def _try_load(self) -> None:
@@ -450,7 +453,7 @@ class LlamaCleaner:
             self._llm = Llama(
                 model_path=str(_QWEN_MODEL_PATH),
                 n_ctx=512,
-                n_threads=4,
+                n_threads=self._n_threads,
                 n_gpu_layers=0,   # CPU only
                 verbose=False,
                 use_mlock=False,
@@ -459,11 +462,25 @@ class LlamaCleaner:
         except Exception as exc:
             logger.warning(f"LlamaCleaner failed to load: {exc}")
 
+    def warmup(self) -> None:
+        '''Run a dummy cleanup to warm up the model/KV cache.'''
+        if self._available:
+            try:
+                self._llm.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user", "content": "um so I was thinking we should meet at 8 no no 9 PM"},
+                    ],
+                    max_tokens=64, temperature=0.0, top_p=1.0,
+                )
+            except Exception:
+                pass
+
     @property
     def is_available(self) -> bool:
         return self._available
 
-    def clean(self, text: str) -> str:
+    def clean(self, text: str, avg_logprob: float = -1.0) -> str:
         """
         Clean raw transcript. Returns original text on any failure.
         Never raises.
@@ -471,7 +488,20 @@ class LlamaCleaner:
         if not self._available:
             return text
         if not text or len(text.split()) < self.MIN_WORDS:
+            logger.debug(f"LlamaCleaner: skipped (too short, {len(text.split())} words < {self.MIN_WORDS})")
             return text
+        lower = text.lower()
+        correction_markers = ["no wait", "i mean", "sorry", "scratch that", "no no", "actually let", "let me rephrase", "um", "uh"]
+        has_correction = any(m in lower for m in correction_markers)
+        # Skip if high confidence (avg_logprob above threshold) and no correction markers
+        logprob_threshold = -0.3
+        if avg_logprob > logprob_threshold and not has_correction:
+            logger.info(f"LlamaCleaner: skipped (high-confidence avg_logprob={avg_logprob:.3f}, no correction markers)")
+            return text
+        if not has_correction:
+            logger.info(f"LlamaCleaner: skipped (no correction markers)")
+            return text
+
         try:
             resp = self._llm.create_chat_completion(
                 messages=[
@@ -487,6 +517,7 @@ class LlamaCleaner:
             # Safety: if output is empty or suspiciously long, return original
             if not cleaned or len(cleaned) > len(text) * 2.5:
                 return text
+            logger.info(f"LlamaCleaner: cleaned ({len(text.split())} words)")
             return cleaned
         except Exception as exc:
             logger.warning(f"LlamaCleaner.clean failed: {exc}")
