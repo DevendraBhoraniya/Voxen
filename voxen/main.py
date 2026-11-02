@@ -28,7 +28,6 @@ from .hotkey import HotkeyListener
 from .transcribe import (
     DEFAULT_CORRECTIONS,
     WhisperTranscriber,
-    WhistleTranscriber,
     create_transcriber,
     detect_hardware,
 )
@@ -126,6 +125,25 @@ def run_first_run_diagnostics(config: Dict):
     else:
         print("[*] Cleanup Engine:       Not available — run: python tools/setup_cleanup_model.py")
 
+    # 3c. Offline model cache verification
+    import os
+    hf_cache = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+    model_name = stt_cfg.get("model", "base.en")
+    model_dir = os.path.join(hf_cache, f"models--Systran--faster-whisper-{model_name}")
+    if os.path.exists(model_dir):
+        print(f"[*] Whisper Model:        {model_name} — cached (offline OK)")
+    else:
+        print(f"[*] Whisper Model:        {model_name} — NOT CACHED (will fail offline)")
+        print("    -> Run: python -c \"from faster_whisper import WhisperModel; WhisperModel('{}', device='cpu', compute_type='int8', local_files_only=False)\"".format(model_name))
+
+    # Silero VAD is bundled with faster-whisper (no download needed)
+    from faster_whisper.utils import get_assets_path
+    vad_model_path = os.path.join(get_assets_path(), "silero_vad_v6.onnx")
+    if os.path.exists(vad_model_path):
+        print("[*] Silero VAD:           bundled with faster-whisper (offline OK)")
+    else:
+        print("[*] Silero VAD:           MISSING - faster-whisper installation may be corrupt")
+
     # 4. Hotkey info
     hotkey_cfg = config.get("hotkey", {})
     combo = hotkey_cfg.get("combination", "ctrl+shift")
@@ -144,9 +162,19 @@ class VoxenApp(QObject):
         super().__init__()
         self.config = config
         self._is_processing = False
+        self._shutdown_event = threading.Event()
         self._lock = threading.Lock()
         self.overlay = None
         self._settings_window = None
+
+        # Bounded pipeline queue + single long-lived worker thread.
+        # Replaces per-dictation thread spawning to avoid unbounded growth.
+        import queue as _queue
+        self._pipeline_queue: "_queue.Queue" = _queue.Queue(maxsize=2)
+        self._pipeline_worker = threading.Thread(
+            target=self._pipeline_worker_loop, daemon=True, name="PipelineWorker"
+        )
+        self._pipeline_worker.start()
 
         # 1. Initialize Audio Recorder
         audio_cfg = self.config.get("audio", {})
@@ -262,7 +290,6 @@ class VoxenApp(QObject):
             correction_dict = app_config.build_corrections(stt_cfg)
 
             t = create_transcriber(
-                engine=stt_cfg.get("engine", "faster-whisper"),
                 model_name=stt_cfg.get("model", stt_cfg.get("model_name", "base.en")),
                 device=stt_cfg.get("device", "auto"),
                 compute_type=stt_cfg.get("compute_type", "auto"),
@@ -271,9 +298,10 @@ class VoxenApp(QObject):
                 vad_filter=stt_cfg.get("vad_filter", True),
                 beam_size=stt_cfg.get("beam_size", 5),
                 initial_prompt=prompt,
-                vocabulary=vocab,
                 corrections=correction_dict,
             )
+            if self._shutdown_event.is_set():
+                return
             # Warm up: run a silent 0.1s clip so first real take is faster
             import numpy as np
             dummy = np.zeros(1600, dtype=np.float32)
@@ -281,6 +309,8 @@ class VoxenApp(QObject):
                 t.transcribe(dummy)
             except Exception:
                 pass
+            if self._shutdown_event.is_set():
+                return
             self.transcriber = t
             # Signal UI on Qt thread
             self.model_ready.emit()
@@ -298,10 +328,15 @@ class VoxenApp(QObject):
         logger.error(f"Model failed to load: {err}")
 
     def _open_config_file(self):
-        """Open config.yaml in Windows default editor."""
+        """Open config.yaml in Windows default editor.
+
+        config_path is derived from a hardcoded relative path ("config.yaml")
+        resolved against the current working directory, so it can never contain
+        untrusted input. os.startfile() avoids any shell/command injection.
+        """
         config_path = os.path.abspath("config.yaml")
         if os.path.exists(config_path):
-            os.system(f'start "" "{config_path}"')
+            os.startfile(config_path)
 
     def _open_settings_window(self):
         """Open (or focus) the settings window."""
@@ -339,47 +374,21 @@ class VoxenApp(QObject):
         correction_dict = app_config.build_corrections(stt_cfg)
 
         try:
-            if model_key == "whistle":
-                stt_cfg["engine"] = "whistle"
-                stt_cfg["model"] = "whistle.cact"
-                self.transcriber = create_transcriber(
-                    engine="whistle",
-                    vocabulary=vocab,
-                    corrections=correction_dict,
-                    language=stt_cfg.get("language", "en")
-                )
-                self.tray.show_message("STT Engine Changed", "Active: whistle.cact (Cactus Compute, 16.9 MB)")
-                logger.info("Switched to Whistle engine (whistle.cact)")
-            elif model_key == "moonshine":
-                stt_cfg["engine"] = "moonshine"
-                stt_cfg["model"] = "moonshine-base-en"
-                self.transcriber = create_transcriber(
-                    engine="moonshine",
-                    model_name="moonshine-base-en",
-                    corrections=correction_dict,
-                    cpu_threads=stt_cfg.get("cpu_threads", 4)
-                )
-                self.tray.show_message("STT Engine Changed", "Active: moonshine-base-en (Useful Sensors ONNX)")
-                logger.info("Switched to Moonshine engine (moonshine-base-en)")
-            else:
-                stt_cfg["engine"] = "faster-whisper"
-                stt_cfg["model"] = model_key
-                self.transcriber = create_transcriber(
-                    engine="faster-whisper",
-                    model_name=model_key,
-                    device=stt_cfg.get("device", "auto"),
-                    compute_type=stt_cfg.get("compute_type", "auto"),
-                    cpu_threads=stt_cfg.get("cpu_threads", 4),
-                    language=stt_cfg.get("language", "en"),
-                    vad_filter=stt_cfg.get("vad_filter", True),
-                    beam_size=stt_cfg.get("beam_size", 5),
-                    initial_prompt=prompt,
-                    vocabulary=vocab,
-                    corrections=correction_dict
-                )
-                actual_dev = getattr(self.transcriber, "actual_device", "cpu").upper()
-                self.tray.show_message("STT Model Changed", f"Active: {model_key} on {actual_dev}")
-                logger.info(f"Switched model to: {model_key} on {actual_dev}")
+            stt_cfg["model"] = model_key
+            self.transcriber = create_transcriber(
+                model_name=model_key,
+                device=stt_cfg.get("device", "auto"),
+                compute_type=stt_cfg.get("compute_type", "auto"),
+                cpu_threads=stt_cfg.get("cpu_threads", 4),
+                language=stt_cfg.get("language", "en"),
+                vad_filter=stt_cfg.get("vad_filter", True),
+                beam_size=stt_cfg.get("beam_size", 5),
+                initial_prompt=prompt,
+                corrections=correction_dict
+            )
+            actual_dev = getattr(self.transcriber, "actual_device", "cpu").upper()
+            self.tray.show_message("STT Model Changed", f"Active: {model_key} on {actual_dev}")
+            logger.info(f"Switched model to: {model_key} on {actual_dev}")
 
         except Exception as e:
             logger.error(f"Failed to switch model to {model_key}: {e}", exc_info=True)
@@ -486,11 +495,31 @@ class VoxenApp(QObject):
         if self.config.get("ui", {}).get("show_overlay", True):
             self.overlay.state_signal.emit("TRANSCRIBING", "Transcribing...")
 
-        threading.Thread(
-            target=self._process_pipeline,
-            args=(audio, duration),
-            daemon=True
-        ).start()
+        try:
+            self._pipeline_queue.put_nowait((audio, duration))
+        except Exception:
+            logger.warning("Dictation pipeline dropped: worker queue full.")
+            self._is_processing = False
+            if self.config.get("ui", {}).get("show_overlay", True):
+                self.overlay.state_signal.emit("ERROR", "Busy")
+
+    def _pipeline_worker_loop(self):
+        import queue as _queue
+        while True:
+            try:
+                item = self._pipeline_queue.get()
+            except Exception:
+                continue
+            if item is None:
+                break
+            audio, duration = item
+            try:
+                self._process_pipeline(audio, duration)
+            except Exception as e:
+                logger.error(f"Pipeline worker error: {e}", exc_info=True)
+            finally:
+                self._is_processing = False
+                self._pipeline_queue.task_done()
 
     def _process_pipeline(self, audio, duration):
         """Background worker for STT, optional Ollama cleanup, and injection."""
@@ -556,11 +585,10 @@ class VoxenApp(QObject):
             logger.error(f"Error in dictation pipeline: {e}", exc_info=True)
             if self.config.get("ui", {}).get("show_overlay", True):
                 self.overlay.state_signal.emit("ERROR", "Error during dictation")
-        finally:
-            self._is_processing = False
 
     def quit(self):
         """Clean shutdown."""
+        self._shutdown_event.set()
         logger.info("Shutting down Voxen...")
         self.hotkey_listener.stop()
         if self.recorder.is_recording:
@@ -568,6 +596,10 @@ class VoxenApp(QObject):
         if self._settings_window is not None:
             self._settings_window.close()
             self._settings_window = None
+        try:
+            self._pipeline_queue.put_nowait(None)
+        except Exception:
+            pass
         self.recorder.close()
         self.tray.hide()
         self.overlay.close()

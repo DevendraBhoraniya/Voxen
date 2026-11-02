@@ -5,6 +5,7 @@ toggle and hold-to-talk modes with debounce protection.
 """
 
 import logging
+import queue
 import threading
 import time
 from typing import Callable, Optional, Set
@@ -58,6 +59,35 @@ class HotkeyListener:
         self._lock = threading.Lock()
         self._listener: Optional[keyboard.Listener] = None
 
+        # Single long-lived worker thread consuming from a bounded queue.
+        # Replaces per-trigger thread spawning to avoid unbounded thread growth.
+        self._queue: "queue.Queue[Callable[[], None]]" = queue.Queue(maxsize=2)
+        self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="HotkeyWorker")
+        self._worker.start()
+
+    def _worker_loop(self):
+        while True:
+            try:
+                cb = self._queue.get()
+            except Exception:
+                continue
+            if cb is None:
+                break
+            try:
+                cb()
+            except Exception as e:
+                logger.error(f"Hotkey worker callback error: {e}", exc_info=True)
+            finally:
+                self._queue.task_done()
+
+    def _enqueue(self, cb: Optional[Callable[[], None]]) -> None:
+        if cb is None:
+            return
+        try:
+            self._queue.put_nowait(cb)
+        except queue.Full:
+            logger.warning("Hotkey trigger dropped: worker queue full.")
+
     def _parse_combination(self, combo: str):
         parts = [p.strip().lower() for p in combo.split("+")]
         self.required_keys = set(parts)
@@ -88,12 +118,10 @@ class HotkeyListener:
 
                 if self.mode == "toggle":
                     logger.debug("Hotkey toggle triggered")
-                    if self.on_trigger:
-                        threading.Thread(target=self.on_trigger, daemon=True).start()
+                    self._enqueue(self.on_trigger)
                 elif self.mode == "hold":
                     logger.debug("Hotkey hold-down start triggered")
-                    if self.on_start:
-                        threading.Thread(target=self.on_start, daemon=True).start()
+                    self._enqueue(self.on_start)
 
     def _on_release(self, key):
         norm = normalize_key(key)
@@ -106,8 +134,7 @@ class HotkeyListener:
 
                 if self.mode == "hold":
                     logger.debug("Hotkey hold release stop triggered")
-                    if self.on_stop:
-                        threading.Thread(target=self.on_stop, daemon=True).start()
+                    self._enqueue(self.on_stop)
 
     def start(self):
         """Start global keyboard hook."""
@@ -122,11 +149,15 @@ class HotkeyListener:
         logger.info("Global hotkey listener started.")
 
     def stop(self):
-        """Stop global keyboard hook."""
+        """Stop global keyboard hook and worker thread."""
         if self._listener is not None:
             try:
                 self._listener.stop()
             except Exception:
                 pass
             self._listener = None
-            logger.info("Global hotkey listener stopped.")
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            pass
+        logger.info("Global hotkey listener stopped.")
