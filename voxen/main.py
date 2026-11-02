@@ -559,17 +559,22 @@ class VoxenApp(QObject):
                 cleanup_dur = time.time() - t_clean
 
             # 3. Inject into focused window
-            if self.config.get("ui", {}).get("show_overlay", True):
-                self.overlay.state_signal.emit("SUCCESS", "Done")
-
             t_inject = time.time()
             inj_cfg = self.config.get("injection", {})
-            inject.inject_text(
+            injected = inject.inject_text(
                 final_text,
                 restore_delay_ms=inj_cfg.get("restore_delay_ms", 120),
                 post_paste_delay_ms=inj_cfg.get("post_paste_delay_ms", 40)
             )
             inject_dur = time.time() - t_inject
+
+            if injected:
+                if self.config.get("ui", {}).get("show_overlay", True):
+                    self.overlay.state_signal.emit("SUCCESS", "Done")
+            else:
+                logger.warning("Injection failed — paste did not plausibly land.")
+                if self.config.get("ui", {}).get("show_overlay", True):
+                    self.overlay.state_signal.emit("ERROR", "Paste failed — check focus")
             total_latency = time.time() - t_pipeline_start
             rtf = stt_dur / duration if duration > 0 else 0
 

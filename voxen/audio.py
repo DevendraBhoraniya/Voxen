@@ -20,7 +20,7 @@ logger = logging.getLogger("Voxen.Audio")
 # Device names that indicate a loopback / system-audio capture endpoint rather
 # than a real microphone. Selecting one makes Voxen transcribe system audio
 # (TTS, media, game sound) instead of the user's voice.
-LOOPBACK_KEYWORDS = [
+LOOPBACK_KEYWORDS = [   
     "stereo mix", "wave out", "what u hear", "loopback",
     "vb-cable", "cable output", "virtual audio", "wasapi loopback",
 ]
@@ -120,7 +120,7 @@ def save_wav_file(audio: np.ndarray, file_path: str = "temp_last_capture.wav", s
     return file_path
 
 
-def normalize_audio(audio: np.ndarray, target_rms: float = 0.08, max_gain: float = 15.0) -> np.ndarray:
+def normalize_audio(audio: np.ndarray, target_rms: float = 0.05, max_gain: float = 8.0) -> np.ndarray:
     """
     Safely normalize audio RMS level so quiet headset/laptop mics reach
     optimal Whisper dynamic range without clipping.
@@ -281,8 +281,8 @@ class AudioRecorder:
         channels: int = 1,
         preroll_ms: int = 500,
         device_index: Optional[int] = None,
-        silence_threshold_energy: float = 0.0008,
-        target_rms_normalize: float = 0.08,
+        silence_threshold_energy: float = 0.0015,
+        target_rms_normalize: float = 0.05,
         audio_level_callback: Optional[Callable] = None
     ):
         self.sample_rate = sample_rate
@@ -408,7 +408,7 @@ class AudioRecorder:
                 rms = chunk_rms
                 normalized_rms = min(1.0, max(0.0, (rms - 0.001) / 0.12))
 
-                num_bars = 24
+                num_bars = 11  # must match overlay.py RealMicWaveformVisualizer.NUM_BARS
                 sub_len = max(1, len(chunk) // num_bars)
                 sub_levels = []
                 for b in range(num_bars):

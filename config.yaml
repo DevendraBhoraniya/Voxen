@@ -2,14 +2,8 @@
 # Fully offline speech-to-text dictation with pre-roll buffering, VAD chunking, and local LLM formatting.
 
 stt:
-  # STT Engine options:
-  #   - "faster-whisper": Whisper via CTranslate2. Most accurate on real microphones
-  #                       and accented speech. Runs on CPU (int8) or CUDA.
-  #   - "whistle": Cactus-Compute Whistle (16.9 MB, ~0.6s CPU latency). Very fast,
-  #                but noticeably weaker on accented/real-mic audio.
-  #   - "moonshine": Useful Sensors Moonshine via sherpa-onnx (~0.59s CPU latency).
-  engine: faster-whisper
-
+  # STT Engine: faster-whisper (offline-only, CTranslate2)
+  # Fully offline - models must be pre-cached in ~/.cache/huggingface/hub/
   # Model options for faster-whisper:
   #   - "base.en":          145 MB, ~1.3-1.7s for a 10s clip on CPU  [RECOMMENDED CPU DEFAULT]
   #   - "small.en":         460 MB, better accuracy but roughly real-time on CPU
@@ -150,7 +144,7 @@ llm:
     Thanks
 
 hotkey:
-  key: ctrl+shift
+  key: alt+shift
   mode: toggle                   # toggle (press once to start, again to stop) | hold
 
 audio:
@@ -158,8 +152,8 @@ audio:
   channels: 1
   preroll_ms: 500                # Ring buffer so the first word is never clipped
   device_index: null             # null for auto-following active microphone
-  target_rms_normalize: 0.08     # Optimal Whisper RMS level
-  silence_threshold_energy: 0.0008
+  target_rms_normalize: 0.05     # Reduced to avoid amplifying background noise (improves accuracy)
+  silence_threshold_energy: 0.0015
 
 inject:
   method: paste                  # paste (clipboard + synthesized Ctrl+V)

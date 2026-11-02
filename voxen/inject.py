@@ -131,12 +131,33 @@ def inject_text(
         # 3. Release any modifiers (from Ctrl+Shift hotkey)
         release_modifier_keys()
 
+        # Capture foreground window before paste
+        hwnd_before = user32.GetForegroundWindow()
+
         # 4. Trigger paste
         simulate_paste()
         time.sleep(post_paste_delay_ms / 1000.0)
 
         # 5. Wait for target app to consume clipboard
         time.sleep(restore_delay_ms / 1000.0)
+
+        # 6. Verify foreground window hasn't changed (detects focus loss)
+        hwnd_after = user32.GetForegroundWindow()
+        if hwnd_before != hwnd_after:
+            # Get window titles for diagnostics
+            def _get_title(hwnd):
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd, buf, 256)
+                return buf.value or "<unknown>"
+            title_before = _get_title(hwnd_before)
+            title_after = _get_title(hwnd_after)
+            logger.warning(
+                f"target window changed during paste — injection may have failed "
+                f"(before='{title_before}', after='{title_after}'). "
+                f"Note: this check detects focus changes only, not paste success "
+                f"within the same window."
+            )
+            return False
 
         return True
 

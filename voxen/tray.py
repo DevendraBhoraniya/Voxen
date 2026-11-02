@@ -167,20 +167,12 @@ class SystemTrayManager(QObject):
         self.model_group.setExclusive(True)
 
         stt_cfg = self.config.get("stt") or self.config.get("transcription", {})
-        engine = str(stt_cfg.get("engine", "faster-whisper")).lower().strip()
-        if engine in ("whistle", "cactus", "cactus-compute", "whistle.cact"):
-            current_model_key = "whistle"
-        elif engine in ("moonshine", "moonshine-base", "moonshine-medium"):
-            current_model_key = "moonshine"
-        else:
-            current_model_key = stt_cfg.get("model") or stt_cfg.get("model_name", "base.en")
+        current_model_key = stt_cfg.get("model") or stt_cfg.get("model_name", "base.en")
 
         available_models = [
-            ("whistle", "whistle.cact (Cactus Compute - 16.9 MB CPU, ~0.6s) [Fastest]"),
-            ("moonshine", "moonshine-base (Useful Sensors - ONNX CPU, ~0.59s)"),
-            ("distil-small.en", "distil-small.en (Distilled Small - available, slower on this CPU)"),
             ("base.en", "base.en (Standard Whisper - ~1.5s CPU) [Recommended Default]"),
             ("small.en", "small.en (4.4% WER, ~1.5s GPU) [Recommended Accuracy]"),
+            ("distil-small.en", "distil-small.en (Distilled Small - available, slower on this CPU)"),
             ("distil-large-v3", "distil-large-v3 (Distilled Large - ~3s GPU)"),
             ("large-v3-turbo", "large-v3-turbo (Flagship Mac Model - ~3-6s GPU)"),
             ("tiny.en", "tiny.en (Lightweight Whisper - ~0.4s GPU)"),
