@@ -6,6 +6,7 @@ Windows application, and restores the original clipboard content seamlessly.
 
 import ctypes
 import logging
+import threading
 import time
 from typing import Optional
 import win32clipboard
@@ -14,6 +15,9 @@ import win32con
 logger = logging.getLogger("Voxen.Inject")
 
 user32 = ctypes.windll.user32
+
+# Serialize all clipboard access to avoid races between concurrent callers.
+_clipboard_lock = threading.Lock()
 
 # Virtual Key Codes
 VK_SHIFT = 0x10
@@ -35,39 +39,49 @@ def _open_clipboard_with_retry(max_attempts: int = 10, delay_sec: float = 0.015)
 
 
 def get_clipboard_text() -> Optional[str]:
-    """Retrieve current clipboard text safely, or None if unavailable."""
-    if not _open_clipboard_with_retry():
-        return None
-    try:
-        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-            return win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-        return None
-    except Exception as e:
-        logger.debug(f"Failed to read clipboard text: {e}")
-        return None
-    finally:
+    """Retrieve current clipboard text safely, or None if unavailable (serialized)."""
+    with _clipboard_lock:
+        if not _open_clipboard_with_retry():
+            return None
         try:
-            win32clipboard.CloseClipboard()
-        except Exception:
-            pass
+            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                return win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to read clipboard text: {e}")
+            return None
+        finally:
+            try:
+                win32clipboard.CloseClipboard()
+            except Exception:
+                pass
 
 
 def set_clipboard_text(text: str) -> bool:
-    """Set text into the Windows clipboard safely."""
-    if not _open_clipboard_with_retry():
+    """Set text into the Windows clipboard safely (serialized + retried)."""
+    with _clipboard_lock:
+        for attempt in range(5):
+            if not _open_clipboard_with_retry():
+                time.sleep(0.01 * (attempt + 1))
+                continue
+            try:
+                try:
+                    win32clipboard.EmptyClipboard()
+                except Exception:
+                    time.sleep(0.01 * (attempt + 1))
+                    continue
+                win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+                return True
+            except Exception as e:
+                logger.debug(f"set_clipboard_text attempt {attempt + 1} failed: {e}")
+                time.sleep(0.01 * (attempt + 1))
+            finally:
+                try:
+                    win32clipboard.CloseClipboard()
+                except Exception:
+                    pass
+        logger.error("Could not write to clipboard after retries.")
         return False
-    try:
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
-        return True
-    except Exception as e:
-        logger.error(f"Failed to set clipboard text: {e}")
-        return False
-    finally:
-        try:
-            win32clipboard.CloseClipboard()
-        except Exception:
-            pass
 
 
 def release_modifier_keys():
@@ -133,10 +147,14 @@ def inject_text(
             logger.debug("Original clipboard content restored.")
         else:
             # If clipboard was empty before, empty it
-            if _open_clipboard_with_retry():
-                try:
-                    win32clipboard.EmptyClipboard()
-                except Exception:
-                    pass
-                finally:
-                    win32clipboard.CloseClipboard()
+            with _clipboard_lock:
+                if _open_clipboard_with_retry():
+                    try:
+                        win32clipboard.EmptyClipboard()
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            win32clipboard.CloseClipboard()
+                        except Exception:
+                            pass
