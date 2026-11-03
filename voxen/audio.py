@@ -455,12 +455,18 @@ class AudioRecorder:
             self._active_device_name = dev_name
             self._active_sr = native_sr
             self._active_channels = channels_to_open
+            # Recompute blocksize/preroll for the actual native rate (fixes mismatch
+            # where _blocksize was derived from the configured 16 kHz rate).
+            self._blocksize = int(self._active_sr * 0.03)
+            preroll_blocks = max(1, int(self._active_sr * (self.preroll_ms / 1000.0) / self._blocksize))
+            self._preroll = collections.deque(maxlen=preroll_blocks)
             self._stream = sd.InputStream(
                 samplerate=self._active_sr,
                 channels=channels_to_open,
                 device=self._active_device_index,
                 dtype="float32",
-                blocksize=int(self._active_sr * 0.03),
+                blocksize=self._blocksize,
+                latency="high",
                 callback=self._stream_callback
             )
             self._stream.start()
@@ -535,13 +541,19 @@ class AudioRecorder:
                 self._active_device_name = dev_name
                 self._active_sr = native_sr
                 self._active_channels = channels_to_open
+                self._blocksize = int(self._active_sr * 0.03)
+                preroll_blocks = max(1, int(self._active_sr * (self.preroll_ms / 1000.0) / self._blocksize))
+                # Preserve existing preroll if stream was already primed; only resize if needed
+                if len(self._preroll) == 0 or self._preroll.maxlen != preroll_blocks:
+                    self._preroll = collections.deque(self._preroll, maxlen=preroll_blocks)
 
                 self._stream = sd.InputStream(
                     samplerate=self._active_sr,
                     channels=channels_to_open,
                     device=self._active_device_index,
                     dtype="float32",
-                    blocksize=int(self._active_sr * 0.03),  # 30ms frames
+                    blocksize=self._blocksize,  # 30ms frames
+                    latency="high",
                     callback=self._stream_callback
                 )
                 self._stream.start()
@@ -588,9 +600,10 @@ class AudioRecorder:
             was_recording = self._is_recording
             self._is_recording = False
             wall_duration = max(0.0, time.time() - self._start_time) if was_recording else 0.0
-            captured_chunks = list(self._chunks)
-            chunk_count = self._chunk_count
-            self._chunks.clear()
+            # Swap instead of copy to minimize lock hold time.
+            captured_chunks = self._chunks
+            self._chunks = []
+            chunk_count = len(captured_chunks)
             self._chunk_count = 0
 
         if not was_recording and not captured_chunks:
