@@ -15,7 +15,6 @@ dependencies = [
     "pyside6>=6.6.0",
     "pywin32>=306",
     "pyyaml>=6.0",
-    "requests>=2.31.0",
     "sounddevice>=0.4.6",
 ]
 

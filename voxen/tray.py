@@ -185,12 +185,7 @@ class SystemTrayManager(QObject):
             self.model_group.addAction(act_m)
             model_menu.addAction(act_m)
 
-        # 6. Cleanup Toggle
-        cleanup_cfg = self.config.get("cleanup", {})
-        self.act_cleanup = QAction("Ollama text cleanup", self.menu, checkable=True)
-        self.act_cleanup.setChecked(cleanup_cfg.get("enabled", False))
-        self.act_cleanup.toggled.connect(self.cleanup_toggled.emit)
-        self.menu.addAction(self.act_cleanup)
+        # 6. (Ollama cleanup removed — LlamaCleaner is the only cleanup engine)
 
         # 7. Overlay Toggle
         ui_cfg = self.config.get("ui", {})

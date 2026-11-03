@@ -157,7 +157,7 @@ class SettingsWindow(QWidget):
             ("Dictation", self._build_dictation),
             ("Audio", self._build_audio),
             ("Transcription", self._build_transcription),
-            ("Text cleanup", self._build_cleanup),
+            ("Text cleanup", self._build_cleanup_info),
             ("Privacy", self._build_privacy),
             ("About", self._build_about),
         ]
@@ -312,33 +312,22 @@ class SettingsWindow(QWidget):
         page.add_stretch()
         return page
 
-    def _build_cleanup(self) -> _Section:
+    def _build_cleanup_info(self) -> _Section:
         page = _Section("Text cleanup")
 
-        clean_cfg = self.config.setdefault("cleanup", self.config.setdefault("llm", {}))
-        enabled = clean_cfg.get("enabled", False)
-
-        self._cleanup_check = QCheckBox("Enable Ollama text cleanup")
-        self._cleanup_check.setChecked(enabled)
-        self._cleanup_check.toggled.connect(self._on_cleanup_toggled)
-        page.add_row("Ollama cleanup", self._cleanup_check,
-                     "Refines punctuation and removes fillers using a local Ollama model.")
-
-        endpoint = QLineEdit(clean_cfg.get("base_url", clean_cfg.get("endpoint", "http://localhost:11434")))
-        endpoint.textChanged.connect(lambda v: clean_cfg.__setitem__("base_url", v))
-        page.add_row("Endpoint", endpoint, "Ollama base URL (localhost only).")
-
-        model = QLineEdit(clean_cfg.get("model", "llama3.2:3b"))
-        model.textChanged.connect(lambda v: clean_cfg.__setitem__("model", v))
-        page.add_row("Model", model, "Ollama model name.")
-
-        privacy = QLabel(
-            "Cleanup runs entirely on your machine against a local Ollama daemon. "
-            "No audio or text is sent to the cloud."
+        from .cleanup import _QWEN_MODEL_PATH, LlamaCleaner
+        lc = LlamaCleaner()
+        status = "Available" if lc.is_available else "Not available"
+        info = QLabel(
+            f"Cleanup engine: Qwen2.5-0.5B (local, offline)\n"
+            f"Status: {status}\n"
+            f"Model path: {_QWEN_MODEL_PATH}\n\n"
+            f"Cleanup removes self-corrections, filler words, and false starts.\n"
+            f"It adds punctuation and capitalisation. Runs entirely on your machine."
         )
-        privacy.setStyleSheet(f"color: {T.Color.TEXT_MUTED}; font-size: {T.Font.SIZE_XS}px;")
-        privacy.setWordWrap(True)
-        page.add_widget(privacy)
+        info.setStyleSheet(f"color: {T.Color.TEXT_MUTED}; font-size: {T.Font.SIZE_XS}px;")
+        info.setWordWrap(True)
+        page.add_widget(info)
 
         page.add_stretch()
         return page
@@ -419,11 +408,7 @@ class SettingsWindow(QWidget):
         if self._on_device_changed:
             self._on_device_changed(idx)
 
-    def _on_cleanup_toggled(self, checked: bool):
-        clean_cfg = self.config.setdefault("cleanup", self.config.setdefault("llm", {}))
-        clean_cfg["enabled"] = checked
-        if self._on_cleanup_toggled:
-            self._on_cleanup_toggled(checked)
+    # (Ollama cleanup removed — LlamaCleaner is the only engine)
 
     def _test_microphone(self):
         self._test_btn.setEnabled(False)

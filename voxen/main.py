@@ -31,7 +31,7 @@ from .transcribe import (
     create_transcriber,
     detect_hardware,
 )
-from .cleanup import OllamaCleaner, LlamaCleaner, check_ollama_status
+from .cleanup import LlamaCleaner
 from . import inject
 from .overlay import FloatingPill
 from .settings_window import SettingsWindow
@@ -107,17 +107,7 @@ def run_first_run_diagnostics(config: Dict):
     else:
         print("[*] Capture Device:       none usable")
 
-    # 3. Ollama Status
-    ollama_cfg = config.get("cleanup", {})
-    endpoint = ollama_cfg.get("endpoint", "http://127.0.0.1:11434")
-    ollama_info = check_ollama_status(endpoint)
-    if ollama_info["available"]:
-        models_str = ", ".join(ollama_info["models"]) if ollama_info["models"] else "None found"
-        print(f"[*] Ollama Status:        Online (Models: {models_str})")
-    else:
-        print(f"[*] Ollama Status:        Offline/Not Running ({ollama_info['error']})")
-        print("    -> Note: Voxen will run fully local Whisper STT without cleanup delay.")
-
+    # 3. Cleanup Engine Status (LlamaCleaner / Qwen2.5-0.5B)
     # 3b. LlamaCleaner (Qwen2.5-0.5B local) Status
     from .cleanup import _QWEN_MODEL_PATH
     if _QWEN_MODEL_PATH.exists():
@@ -192,27 +182,8 @@ class VoxenApp(QObject):
         #    blocking the Qt event loop for ~6s on startup.
         self.transcriber = None
 
-        # 3. Initialize Ollama Cleaner
+        # 3. Initialize LlamaCleaner (Qwen2.5-0.5B, fast local semantic cleanup)
         clean_cfg = self.config.get("llm") or self.config.get("cleanup", {})
-        stt_cfg = self.config.get("stt") or self.config.get("transcription", {})
-        vocab = stt_cfg.get("vocabulary") or []
-        self.cleaner = OllamaCleaner(
-            enabled=clean_cfg.get("enabled", False),
-            endpoint=clean_cfg.get("base_url", clean_cfg.get("endpoint", "http://127.0.0.1:11434")),
-            model=clean_cfg.get("model", "llama3.2:3b"),
-            timeout_seconds=clean_cfg.get("timeout_seconds", 4.0),
-            temperature=clean_cfg.get("temperature", 0.1),
-            min_words=clean_cfg.get("min_words_for_cleanup", 10),
-            min_similarity=clean_cfg.get("min_similarity", 0.8),
-            keep_alive=clean_cfg.get("keep_alive", "30m"),
-            vocabulary=vocab,
-            example_input=clean_cfg.get("example_input", None),
-            example_output=clean_cfg.get("example_output", None),
-            remove_fillers=clean_cfg.get("remove_fillers", True),
-            system_prompt=clean_cfg.get("system_prompt", None)
-        )
-
-        # 3b. Initialize LlamaCleaner (Qwen2.5-0.5B, fast local semantic cleanup)
         clean_threads = clean_cfg.get("cleanup_threads", None)
         self._llama_cleaner = LlamaCleaner(n_threads=clean_threads)
         if self._llama_cleaner.is_available:
@@ -409,10 +380,9 @@ class VoxenApp(QObject):
         self.tray.show_message("Microphone Changed", f"Active microphone: {name}")
 
     def _on_cleanup_toggled(self, enabled: bool):
-        self.config.setdefault("cleanup", {})["enabled"] = enabled
-        self.cleaner.enabled = enabled
+        self.config.setdefault("llm", {})["llama_cleanup"] = enabled
         status = "Enabled" if enabled else "Disabled"
-        self.tray.show_message("Ollama Cleanup", f"Text refinement {status}.")
+        self.tray.show_message("Cleanup", f"Text refinement {status}.")
 
     def _on_overlay_toggled(self, enabled: bool):
         self.config.setdefault("ui", {})["show_overlay"] = enabled
@@ -554,11 +524,7 @@ class VoxenApp(QObject):
                 t_clean = time.time()
                 final_text = self._llama_cleaner.clean(raw_text, getattr(self.transcriber, "last_avg_logprob", -1.0))
                 cleanup_dur = time.time() - t_clean
-            elif self.cleaner.enabled and self.cleaner.is_online():
-                if self.config.get("ui", {}).get("show_overlay", True):
-                    self.overlay.state_signal.emit("CLEANING", "Refining text...")
-                t_clean = time.time()
-                final_text = self.cleaner.clean(raw_text)
+            # Ollama fallback removed — LlamaCleaner is the only cleanup engine
                 cleanup_dur = time.time() - t_clean
 
             # 3. Inject into focused window
