@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 llama = ["llama-cpp-python>=0.3.0"]
+test = ["pytest>=8.0.0"]
 
 [project.scripts]
 voxen = "voxen.main:main"

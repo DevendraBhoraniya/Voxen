@@ -16,15 +16,24 @@ import numpy as np
 import win32gui
 import win32con
 
+import os
+import pytest
+
 from PySide6.QtCore import Qt, QTimer
+
+CI = os.environ.get("CI", "").lower() in ("1", "true", "yes", "on")
+skip_ui = pytest.mark.skipif(
+    CI, reason="needs real display / Notepad / microphone"
+)
 from PySide6.QtWidgets import QApplication
 
 from voxen.overlay import FloatingPill, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOPMOST
 from voxen.tray import SystemTrayManager, create_tray_icon_pixmap
-import inject
+from voxen import inject
 
 
-def verify_ui_components():
+@skip_ui
+def test_ui_components():
     print("=" * 60)
     print("VOXEN INTERFACE VERIFICATION SUITE")
     print("=" * 60)
@@ -206,4 +215,7 @@ def verify_ui_components():
 
 
 if __name__ == "__main__":
-    verify_ui_components()
+    if os.environ.get("CI") == "true":
+        print("Skipping UI hardware tests under CI.")
+        sys.exit(0)
+    test_ui_components()
