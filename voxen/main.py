@@ -592,6 +592,21 @@ def main():
     except Exception:
         pass
 
+    # Single-instance guard: a named mutex prevents two Voxen processes from
+    # contending over the microphone and clipboard. Non-Windows or missing
+    # pywin32 silently skips the guard.
+    try:
+        import win32api
+        import win32event
+        _mutex = win32event.CreateMutex(None, False, "Voxen.Dictation.App.1.0")
+        if win32api.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            print("Voxen is already running. Only one instance may run at a time.")
+            sys.exit(1)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
     config_path = "config.yaml"
     config = app_config.load_config(config_path)
     run_first_run_diagnostics(config)
