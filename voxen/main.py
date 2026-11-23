@@ -521,7 +521,7 @@ class VoxenApp(QObject):
             final_text = raw_text
             cleanup_dur = 0.0
 
-            # 2. Cleanup priority: LlamaCleaner (fast, local) → OllamaCleaner (server) → skip
+            # 2. Cleanup: LlamaCleaner (local Qwen) is the only cleanup engine.
             clean_cfg = self.config.get("llm") or self.config.get("cleanup", {})
             llama_cleanup_enabled = clean_cfg.get("llama_cleanup", True)
             if llama_cleanup_enabled and self._llama_cleaner.is_available:
@@ -529,8 +529,6 @@ class VoxenApp(QObject):
                     self.overlay.state_signal.emit("CLEANING", "Refining text...")
                 t_clean = time.time()
                 final_text = self._llama_cleaner.clean(raw_text, getattr(self.transcriber, "last_avg_logprob", -1.0))
-                cleanup_dur = time.time() - t_clean
-            # Ollama fallback removed — LlamaCleaner is the only cleanup engine
                 cleanup_dur = time.time() - t_clean
 
             # 3. Inject into focused window

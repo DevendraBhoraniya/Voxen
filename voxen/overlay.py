@@ -241,18 +241,6 @@ class FloatingPill(QWidget):
         except Exception as e:
             logger.debug(f"Could not apply WS_EX_NOACTIVATE: {e}")
 
-    def nativeEvent(self, eventType, message):
-        """Intercept WM_MOUSEACTIVATE so mouse clicks never activate or steal focus."""
-        if eventType == b"windows_generic_MSG":
-            try:
-                # MSG pointer unpacking
-                msg_val = ctypes.wintypes.MSG.from_address(message.__int__())
-                if msg_val.message == WM_MOUSEACTIVATE:
-                    return True, MA_NOACTIVATE
-            except Exception:
-                pass
-        return super().nativeEvent(eventType, message)
-
     def _init_ui(self):
         self.setFixedHeight(40)
         self.setMinimumWidth(210)

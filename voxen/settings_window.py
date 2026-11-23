@@ -277,19 +277,14 @@ class SettingsWindow(QWidget):
         page = _Section("Transcription")
 
         stt_cfg = self.config.setdefault("stt", {})
-        engine = str(stt_cfg.get("engine", "faster-whisper")).lower().strip()
         model = stt_cfg.get("model") or stt_cfg.get("model_name", "base.en")
 
-        engine_combo = QComboBox()
-        engine_combo.addItems(["faster-whisper", "whistle", "moonshine"])
-        engine_combo.setCurrentText(engine if engine in ("faster-whisper", "whistle", "moonshine") else "faster-whisper")
-        engine_combo.currentTextChanged.connect(lambda v: stt_cfg.__setitem__("engine", v))
-        page.add_row("Engine", engine_combo, "faster-whisper is recommended for accuracy on CPU.")
-
+        # Only faster-whisper engines are implemented; Whistle/Moonshine
+        # entries were removed with those engines (they were never wired up).
         model_combo = QComboBox()
         models = [
             "base.en", "small.en", "distil-small.en", "distil-large-v3",
-            "large-v3-turbo", "tiny.en", "whistle.cact", "moonshine-base-en",
+            "large-v3-turbo", "tiny.en",
         ]
         model_combo.addItems(models)
         if model in models:
@@ -297,7 +292,7 @@ class SettingsWindow(QWidget):
         model_combo.currentTextChanged.connect(lambda v: stt_cfg.__setitem__("model", v))
         page.add_row("Model", model_combo, "base.en is the CPU default. Switching reloads the model.")
 
-        status = QLabel(f"Current: {engine} \u2192 {model}")
+        status = QLabel(f"Current: faster-whisper -> {model}")
         status.setStyleSheet(f"color: {T.Color.TEXT_MUTED}; font-size: {T.Font.SIZE_XS}px;")
         page.add_widget(status)
 
@@ -315,9 +310,8 @@ class SettingsWindow(QWidget):
     def _build_cleanup_info(self) -> _Section:
         page = _Section("Text cleanup")
 
-        from .cleanup import _QWEN_MODEL_PATH, LlamaCleaner
-        lc = LlamaCleaner()
-        status = "Available" if lc.is_available else "Not available"
+        from .cleanup import _QWEN_MODEL_PATH
+        status = "Available" if _QWEN_MODEL_PATH.exists() else "Not available"
         info = QLabel(
             f"Cleanup engine: Qwen2.5-0.5B (local, offline)\n"
             f"Status: {status}\n"
