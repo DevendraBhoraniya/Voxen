@@ -30,8 +30,57 @@ VK_MENU = 0x12  # Alt
 VK_V = 0x56
 KEYEVENTF_KEYUP = 0x0002
 
-# Clipboard formats that count as "plain text" and are safe to overwrite.
+# Clipboard formats that represent plain text and are safe to overwrite.
 _TEXT_FORMATS = {win32con.CF_UNICODETEXT, win32con.CF_TEXT}
+
+# Formats Windows commonly writes next to plain text (e.g. CF_LOCALE).
+# Losing them is not data loss, so they do not block dictation injection.
+_HARMLESS_FORMATS = _TEXT_FORMATS | {
+    getattr(win32con, "CF_LOCALE", 16),
+    getattr(win32con, "CF_OEMTEXT", 7),
+}
+
+# Formats that represent rich / non-text user data. Overwriting them
+# destroys the user's clipboard content, so injection aborts when any
+# of these is present alongside (or instead of) plain text.
+_RICH_FORMATS = {
+    getattr(win32con, "CF_BITMAP", 2),
+    getattr(win32con, "CF_DIB", 8),
+    getattr(win32con, "CF_DIBV5", 0),
+    getattr(win32con, "CF_PALETTE", 9),
+    getattr(win32con, "CF_ENHMETAFILE", 14),
+    getattr(win32con, "CF_METAFILEPICT", 3),
+    getattr(win32con, "CF_HDROP", 15),   # file list / Shell IDList
+    getattr(win32con, "CF_HTML", 0),
+    getattr(win32con, "CF_RTF", 0),
+    getattr(win32con, "CF_DIF", 5),
+    getattr(win32con, "CF_SYLK", 4),
+    getattr(win32con, "CF_OWNERDISPLAY", 0),
+}
+
+
+# Preferred display names for clipboard formats (win32con has duplicate
+# names per value, e.g. CF_BITMAP and CF_PRINTERFONTS are both 2).
+_FORMAT_PRIMARY_NAME = {
+    1: "CF_TEXT",
+    2: "CF_BITMAP",
+    7: "CF_OEMTEXT",
+    8: "CF_DIB",
+    9: "CF_PALETTE",
+    13: "CF_UNICODETEXT",
+    14: "CF_ENHMETAFILE",
+    15: "CF_HDROP",
+    16: "CF_LOCALE",
+}
+
+
+def _format_name(fmt: int) -> str:
+    if fmt in _FORMAT_PRIMARY_NAME:
+        return _FORMAT_PRIMARY_NAME[fmt]
+    for _name, _value in vars(win32con).items():
+        if _name.startswith("CF_") and _value == fmt:
+            return _name
+    return f"format {fmt}"
 
 
 def _open_clipboard_with_retry(max_attempts: int = 10, delay_sec: float = 0.015) -> bool:
@@ -93,10 +142,11 @@ def set_clipboard_text(text: str) -> bool:
 
 def clipboard_has_non_text() -> bool:
     """
-    Return True when the clipboard holds any format besides plain text.
+    Return True when the clipboard holds rich / non-text user data that
+    dictation must not destroy (images, file lists, HTML, RTF, ...).
 
-    Used as a guard before overwriting the clipboard: images, file lists
-    (CF_HDROP), HTML, and other formats must never be destroyed by dictation.
+    Harmless text accompaniments (CF_LOCALE, CF_OEMTEXT) are ignored, so an
+    ordinary text clipboard passes through and dictation is not blocked.
     Returns True (treat as unsafe) when the clipboard cannot be inspected.
     """
     with _clipboard_lock:
@@ -108,7 +158,11 @@ def clipboard_has_non_text() -> bool:
                 fmt = win32clipboard.EnumClipboardFormats(fmt)
                 if fmt == 0:
                     break
-                if fmt not in _TEXT_FORMATS:
+                if fmt in _RICH_FORMATS:
+                    logger.warning(
+                        f"Clipboard holds rich format {_format_name(fmt)} "
+                        f"({fmt}); aborting injection to avoid data loss."
+                    )
                     return True
             return False
         except Exception as e:

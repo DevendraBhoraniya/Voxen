@@ -96,3 +96,30 @@ def test_inject_text_empty_clipboard(fake_clipboard):
     assert fake_clipboard.formats == set() or fake_clipboard.data.get(inject.win32con.CF_UNICODETEXT) == "dictated text"
     # After restore path, empty clipboard is re-emptied (no text to restore).
     assert fake_clipboard.data.get(inject.win32con.CF_UNICODETEXT) is None or len(fake_clipboard.formats) == 0
+
+
+def test_inject_text_text_with_locale_metadata_passes(fake_clipboard):
+    """CF_UNICODETEXT + CF_LOCALE (normal Windows text clipboard) is safe."""
+    fake_clipboard.formats.add(inject.win32con.CF_UNICODETEXT)
+    fake_clipboard.data[inject.win32con.CF_UNICODETEXT] = "previous user content"
+    # CF_LOCALE = 16, harmless metadata Windows writes next to text.
+    fake_clipboard.formats.add(16)
+
+    result = inject.inject_text("dictated text", restore_delay_ms=0, post_paste_delay_ms=0)
+
+    assert result is True
+    assert fake_clipboard.data.get(inject.win32con.CF_UNICODETEXT) == "previous user content"
+
+
+def test_inject_text_text_plus_bitmap_aborts(fake_clipboard):
+    """CF_UNICODETEXT + CF_BITMAP: rich content present, abort without writes."""
+    fake_clipboard.formats.add(inject.win32con.CF_UNICODETEXT)
+    fake_clipboard.data[inject.win32con.CF_UNICODETEXT] = "previous user content"
+    fake_clipboard.formats.add(2)  # CF_BITMAP
+
+    result = inject.inject_text("dictated text", restore_delay_ms=0, post_paste_delay_ms=0)
+
+    assert result is False
+    # Abort happens before any write: previous content untouched, no new format added.
+    assert fake_clipboard.data.get(inject.win32con.CF_UNICODETEXT) == "previous user content"
+    assert fake_clipboard.formats == {inject.win32con.CF_UNICODETEXT, 2}
