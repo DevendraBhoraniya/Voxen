@@ -406,7 +406,13 @@ class AudioRecorder:
     def _stream_callback(self, indata, frames, time_info, status):
         """
         Internal PortAudio callback.
-        Entire body is protected so no exception escapes into PortAudio CFFI layer.
+
+        Kept deliberately minimal so it can never block the PortAudio thread
+        and cause input overflow (dropped audio frames). All it does is
+        snapshot the chunk, update the display level, and record the timestamp.
+        Audio-level reporting for the overlay happens on the GUI thread via
+        VoxenApp's level poller, not from this callback.
+        Entire body is protected so no exception escapes into PortAudio CFFI.
         """
         try:
             if status:
@@ -421,7 +427,7 @@ class AudioRecorder:
                 chunk = indata.flatten().copy()
 
             chunk_rms = float(np.sqrt(np.mean(chunk ** 2)))
-            self.level = chunk_rms
+            self.level = chunk_rms  # display value; read from GUI thread, no lock needed
 
             with self._lock:
                 if self._is_recording:
@@ -430,29 +436,6 @@ class AudioRecorder:
                 else:
                     self._preroll.append(chunk)
                 self._last_chunk_ts = time.time()
-
-            # Compute real audio levels for visualizer (only while recording;
-            # the primed idle stream would otherwise wake the GUI 33x/second).
-            if self.audio_level_callback and self._is_recording:
-                rms = chunk_rms
-                normalized_rms = min(1.0, max(0.0, (rms - 0.001) / 0.12))
-
-                num_bars = 11  # must match overlay.py RealMicWaveformVisualizer.NUM_BARS
-                sub_len = max(1, len(chunk) // num_bars)
-                sub_levels = []
-                for b in range(num_bars):
-                    sub = chunk[b * sub_len : (b + 1) * sub_len]
-                    sub_rms = float(np.sqrt(np.mean(sub ** 2))) if len(sub) > 0 else 0.0
-                    val = min(1.0, max(0.0, (sub_rms - 0.0008) / 0.12))
-                    sub_levels.append(val)
-
-                try:
-                    self.audio_level_callback(normalized_rms, sub_levels)
-                except TypeError:
-                    try:
-                        self.audio_level_callback(normalized_rms)
-                    except Exception:
-                        pass
         except Exception as e:
             logger.error(f"Error inside audio stream callback: {e}", exc_info=True)
             self._stream_error = str(e)

@@ -10,8 +10,15 @@ Comprehensive automated test suite for Voxen Audio Stream Recovery:
 """
 
 import time
+import os
 import sounddevice as sd
+import pytest
 from voxen.audio import AudioRecorder, resolve_input_device, refresh_audio_devices, list_audio_devices
+
+CI = os.environ.get("CI", "").lower() in ("1", "true", "yes", "on")
+skip_hardware = pytest.mark.skipif(
+    CI, reason="needs real microphone / Bluetooth headset hardware"
+)
 
 
 def test_device_re_enumeration():
@@ -81,6 +88,7 @@ def test_stream_lifecycle_release():
     print("[PASS] close() released the audio endpoint.")
 
 
+@skip_hardware
 def test_hardware_available_microphones():
     print("\n--- Test 5: Hardware Verification across Connected Microphones ---")
     devices = list_audio_devices(refresh=True)

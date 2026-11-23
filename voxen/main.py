@@ -12,7 +12,7 @@ import threading
 from typing import Dict
 import yaml
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
 from . import config as app_config
@@ -185,8 +185,14 @@ class VoxenApp(QObject):
             device_index=audio_cfg.get("device_index", None),
             silence_threshold_energy=audio_cfg.get("silence_threshold_energy", 0.0008),
             target_rms_normalize=audio_cfg.get("target_rms_normalize", 0.08),
-            audio_level_callback=self._on_audio_level
         )
+
+        # GUI-thread level poller for the overlay waveform. Runs at ~30 FPS
+        # only while recording, so the PortAudio callback stays lean and can't
+        # cause input overflow (dropped audio frames).
+        self._level_timer = QTimer(self)
+        self._level_timer.setInterval(33)
+        self._level_timer.timeout.connect(self._poll_audio_level)
 
         # 2. Transcriber starts as None — loaded asynchronously to avoid
         #    blocking the Qt event loop for ~6s on startup.
@@ -348,6 +354,15 @@ class VoxenApp(QObject):
         if sw is not None and sw.isVisible():
             sw.audio_level.emit(rms, sub_levels)
 
+    def _poll_audio_level(self):
+        """GUI-thread poller: read recorder.level and forward to UI.
+
+        Runs at ~30 FPS only while recording. Keeps the PortAudio callback
+        lean so it never blocks and causes input overflow.
+        """
+        rms = getattr(self.recorder, "level", 0.0)
+        self._on_audio_level(rms, None)
+
     def _on_model_changed(self, model_key: str):
         """Switch speech recognition model/engine on the fly."""
         stt_cfg = self.config.setdefault("stt", {})
@@ -440,6 +455,9 @@ class VoxenApp(QObject):
         if self.config.get("ui", {}).get("show_overlay", True):
             self.overlay.state_signal.emit("RECORDING", "Listening...")
 
+        # Start GUI-thread level poller for the overlay waveform.
+        self._level_timer.start()
+
     def stop_recording(self):
         """Stop audio capture and initiate asynchronous pipeline."""
         if not self.recorder.is_recording:
@@ -447,6 +465,10 @@ class VoxenApp(QObject):
 
         logger.info("Stopping dictation recording...")
         self.tray.set_recording_state(False)
+
+        # Stop GUI-thread level poller.
+        self._level_timer.stop()
+
         audio, duration, status = self.recorder.stop_recording()
 
         # Handle capture failures explicitly (never silently produce an empty transcript)
@@ -577,6 +599,7 @@ class VoxenApp(QObject):
         """Clean shutdown."""
         self._shutdown_event.set()
         logger.info("Shutting down Voxen...")
+        self._level_timer.stop()
         self.hotkey_listener.stop()
         if self.recorder.is_recording:
             self.recorder.stop_recording()
