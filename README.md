@@ -1,5 +1,7 @@
 # Voxen 🎙️
 
+[![CI](https://github.com/DevendraBhoraniya/Voxen/actions/workflows/ci.yml/badge.svg)](https://github.com/DevendraBhoraniya/Voxen/actions/workflows/ci.yml)
+
 A lightweight, fully local Windows equivalent of Wispr Flow. Press **Ctrl+Shift** to dictate speech into any active Windows application (Notepad, Word, Chrome, Slack, etc.) with real-time audio visualization, zero telemetry, and seamless clipboard injection.
 
 ---
@@ -94,11 +96,18 @@ uv run voxen
 
 ### 3. Verification Test Suite
 
-To run the automated 5-stage verification test suite inside `.venv`:
+To run the automated test suite inside `.venv`:
 
 ```powershell
-uv run python test_e2e.py
+# Hardware/GUI stages (mic, Whisper model, Notepad) are skipped under CI;
+# run locally on a machine with a microphone and display.
+$env:CI="true"
+uv run pytest tests/ -rs -q
 ```
+
+The unit-style tests (config, clipboard, audio re-init, vocabulary, stream
+recovery) run without hardware. The e2e microphone/Notepad stages require a
+real microphone and display and are skipped in CI.
 
 ### 4. How to Dictate
 
