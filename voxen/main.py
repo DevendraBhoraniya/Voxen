@@ -110,8 +110,17 @@ def run_first_run_diagnostics(config: Dict):
     # 3. Cleanup Engine Status (LlamaCleaner / Qwen2.5-0.5B)
     # 3b. LlamaCleaner (Qwen2.5-0.5B local) Status
     from .cleanup import _QWEN_MODEL_PATH
-    if _QWEN_MODEL_PATH.exists():
+    model_exists = _QWEN_MODEL_PATH.exists()
+    try:
+        import llama_cpp  # noqa: F401
+        llama_cpp_installed = True
+    except Exception:
+        llama_cpp_installed = False
+    if model_exists and llama_cpp_installed:
         print("[*] Cleanup Engine:       Qwen2.5-0.5B (local) — ready")
+    elif model_exists and not llama_cpp_installed:
+        print("[*] Cleanup Engine:       Model present but llama_cpp not installed —")
+        print("                          disabled. Run: uv sync --extra llama")
     else:
         print("[*] Cleanup Engine:       Not available — run: python tools/setup_cleanup_model.py")
 
