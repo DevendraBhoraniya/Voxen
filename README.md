@@ -1,7 +1,5 @@
 # Voxen
 
-[![CI](https://github.com/DevendraBhoraniya/Voxen/actions/workflows/ci.yml/badge.svg)](https://github.com/DevendraBhoraniya/Voxen/actions/workflows/ci.yml)
-
 ## Status
 
 Working prototype. Windows only. CPU-tested. Single user. Not production software.
@@ -48,11 +46,10 @@ uv run voxen
 Run the suite inside .venv:
 
 ```powershell
-$env:CI="true"
 uv run pytest tests/ -rs -q
 ```
 
-Unit-style tests (config, clipboard, audio re-init, vocabulary, stream recovery) run without hardware. The e2e microphone/Notepad stages and the GUI overlay test require a real microphone and display and are skipped under CI=true.
+Unit-style tests (config, clipboard, audio re-init, vocabulary, stream recovery) run without hardware. The e2e microphone/Notepad stages and the GUI overlay test require a real microphone and display; skip them if your environment lacks those.
 
 ## Roadmap
 
@@ -60,4 +57,3 @@ Unit-style tests (config, clipboard, audio re-init, vocabulary, stream recovery)
 - Add GPU runtime (requires cublas64_12.dll)
 - Run the benchmark and fill benchmarks/results.md with real numbers
 - Retain transcript on failed clipboard injection
-- Verify CI passes in the GitHub Actions tab

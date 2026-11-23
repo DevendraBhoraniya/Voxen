@@ -38,7 +38,7 @@ Run:
 uv run voxen                              # via entry point
 .\.venv\Scripts\python.exe -m compileall -q voxen tests tools
 uv sync --extra test
-uv run pytest tests/ -rs -q               # CI=true skips hardware stages
+uv run pytest tests/ -rs -q
 ```
 
 ---
@@ -75,13 +75,12 @@ F:\test\STT\
 │  ├─ overlay.py               # FloatingPill (PySide6, WS_EX_NOACTIVATE)
 │  ├─ tray.py                  # SystemTrayManager
 │  └─ settings_window.py       # Settings UI (faster-whisper models only)
-├─ tests/                      # pytest suite (hardware stages skip under CI)
+├─ tests/                      # pytest suite (hardware stages require mic/display)
 ├─ tools/                      # benchmarking / diagnostics
 ├─ docs/ARCHITECTURE.md        # this file
 ├─ config.yaml                 # Runtime configuration
 ├─ pyproject.toml              # Dependencies, entry point, packaging
 ├─ uv.lock                     # Lockfile (regenerated; requests removed)
-├─ .github/workflows/ci.yml    # CI: windows-latest, uv sync --extra test, pytest
 ├─ README.md
 └─ .gitignore
 ```
@@ -221,18 +220,14 @@ No per-dictation thread spawning; no unbounded thread growth.
 ## 8. Tests
 
 pytest suite under `tests/`. Hardware/GUI stages (mic capture, Whisper
-transcription, Notepad injection, UI display) are skipped under `CI=true`
-instead of failing. Non-hardware tests (config persistence, clipboard guard,
-audio re-init guard, vocabulary corrections, stream recovery) run without
-hardware.
+transcription, Notepad injection, UI display) require a microphone and
+display; skip them if your environment lacks those. Non-hardware tests
+(config persistence, clipboard guard, audio re-init guard, vocabulary
+corrections, stream recovery) run without hardware.
 
 ```
-CI=true uv run pytest tests/ -rs -q
+uv run pytest tests/ -rs -q
 ```
-
-No CI existed before this change; `.github/workflows/ci.yml` now runs on
-`windows-latest` and fails on any test failure. The CI result has not been
-observed from this environment.
 
 ---
 
@@ -257,4 +252,3 @@ observed from this environment.
 - Single-instance mutex with two running Voxen instances.
 - `uv sync --extra test` into a fully fresh, non-project venv (uv 0.13.9
   `--active` quirk; verified in the project venv instead).
-- CI run result (`.github/workflows/ci.yml` created; Actions tab not checked).
