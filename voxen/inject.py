@@ -2,6 +2,10 @@
 Safe text injection module for Voxen.
 Saves user clipboard, injects text via Ctrl+V paste simulation into the focused
 Windows application, and restores the original clipboard content seamlessly.
+
+Data-safety rule: the clipboard is never overwritten when it holds non-text
+content (images, file lists, HTML, ...). In that case injection aborts and
+returns False without modifying the clipboard.
 """
 
 import ctypes
@@ -25,6 +29,9 @@ VK_CONTROL = 0x11
 VK_MENU = 0x12  # Alt
 VK_V = 0x56
 KEYEVENTF_KEYUP = 0x0002
+
+# Clipboard formats that count as "plain text" and are safe to overwrite.
+_TEXT_FORMATS = {win32con.CF_UNICODETEXT, win32con.CF_TEXT}
 
 
 def _open_clipboard_with_retry(max_attempts: int = 10, delay_sec: float = 0.015) -> bool:
@@ -84,6 +91,36 @@ def set_clipboard_text(text: str) -> bool:
         return False
 
 
+def clipboard_has_non_text() -> bool:
+    """
+    Return True when the clipboard holds any format besides plain text.
+
+    Used as a guard before overwriting the clipboard: images, file lists
+    (CF_HDROP), HTML, and other formats must never be destroyed by dictation.
+    Returns True (treat as unsafe) when the clipboard cannot be inspected.
+    """
+    with _clipboard_lock:
+        if not _open_clipboard_with_retry():
+            return True
+        try:
+            fmt = 0
+            while True:
+                fmt = win32clipboard.EnumClipboardFormats(fmt)
+                if fmt == 0:
+                    break
+                if fmt not in _TEXT_FORMATS:
+                    return True
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to enumerate clipboard formats: {e}")
+            return True
+        finally:
+            try:
+                win32clipboard.CloseClipboard()
+            except Exception:
+                pass
+
+
 def release_modifier_keys():
     """Ensure modifier keys are physically and logically released before pasting."""
     for vk in (VK_SHIFT, VK_CONTROL, VK_MENU):
@@ -109,24 +146,34 @@ def inject_text(
 ) -> bool:
     """
     Safely inject transcribed text at the currently active typing cursor.
-    1. Saves current clipboard text.
-    2. Writes dictation text to clipboard.
-    3. Releases any lingering hotkey modifiers.
-    4. Triggers Ctrl+V paste.
-    5. Waits for the target app to process paste.
-    6. Restores original clipboard text.
+    1. Aborts if the clipboard holds non-text content (no modification).
+    2. Saves current clipboard text.
+    3. Writes dictation text to clipboard.
+    4. Releases any lingering hotkey modifiers.
+    5. Triggers Ctrl+V paste.
+    6. Waits for the target app to process paste.
+    7. Restores original clipboard text (or empties it if it was empty).
     """
     if not text:
+        return False
+
+    # Guard: never clobber non-text clipboard content.
+    if clipboard_has_non_text():
+        logger.warning(
+            "Clipboard holds non-text content; aborting injection to avoid data loss."
+        )
         return False
 
     # 1. Save previous clipboard text
     prev_text = get_clipboard_text()
 
+    clipboard_modified = False
     try:
         # 2. Put dictation text on clipboard
         if not set_clipboard_text(text):
             logger.error("Could not write dictation to clipboard.")
             return False
+        clipboard_modified = True
 
         # 3. Release any modifiers (from Ctrl+Shift hotkey)
         release_modifier_keys()
@@ -162,20 +209,21 @@ def inject_text(
         return True
 
     finally:
-        # 6. Restore original clipboard
-        if prev_text is not None:
-            set_clipboard_text(prev_text)
-            logger.debug("Original clipboard content restored.")
-        else:
-            # If clipboard was empty before, empty it
-            with _clipboard_lock:
-                if _open_clipboard_with_retry():
-                    try:
-                        win32clipboard.EmptyClipboard()
-                    except Exception:
-                        pass
-                    finally:
+        # 7. Restore original clipboard only if we modified it.
+        if clipboard_modified:
+            if prev_text is not None:
+                set_clipboard_text(prev_text)
+                logger.debug("Original clipboard content restored.")
+            else:
+                # If clipboard was empty before, empty it.
+                with _clipboard_lock:
+                    if _open_clipboard_with_retry():
                         try:
-                            win32clipboard.CloseClipboard()
+                            win32clipboard.EmptyClipboard()
                         except Exception:
                             pass
+                        finally:
+                            try:
+                                win32clipboard.CloseClipboard()
+                            except Exception:
+                                pass
