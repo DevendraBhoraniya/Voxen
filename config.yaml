@@ -145,7 +145,7 @@ llm:
     Thanks
 
 hotkey:
-  key: alt+shift
+  key: ctrl+shift
   mode: toggle                   # toggle (press once to start, again to stop) | hold
 
 audio:
