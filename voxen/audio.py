@@ -36,13 +36,42 @@ def is_loopback_device(name: str) -> bool:
 
 def refresh_audio_devices() -> bool:
     """
-    Safely re-enumerate Windows audio devices by re-initializing PortAudio.
-    Ensures newly plugged USB mics or Bluetooth headsets are detected immediately.
+    Re-query available audio devices without tearing down the PortAudio backend.
+
+    Enumeration via sd.query_devices() reflects currently plugged devices, so
+    terminating/re-initializing PortAudio is unnecessary. The previous
+    implementation killed any open input stream (including Voxen's primed
+    pre-roll stream) whenever the tray microphone menu was opened.
     """
+    try:
+        sd.query_devices()
+        logger.debug("Audio devices re-enumerated.")
+        return True
+    except Exception as e:
+        logger.error(f"Error re-enumerating audio devices: {e}")
+        return False
+
+
+def safe_reinitialize_portaudio(recorder: "AudioRecorder") -> bool:
+    """
+    Re-initialize the PortAudio backend only when no input stream is open.
+
+    Refuses (returns False) if the recorder has an active stream or is
+    recording, to avoid killing an in-progress capture.
+    """
+    if recorder is None:
+        logger.warning("Refusing to re-initialize PortAudio: no recorder given.")
+        return False
+    if recorder.is_recording or recorder._is_stream_active():
+        logger.warning(
+            "Refusing to re-initialize PortAudio: audio stream is open or "
+            "recording is active. Re-enumerate devices instead."
+        )
+        return False
     try:
         sd._terminate()
         sd._initialize()
-        logger.debug("PortAudio backend re-initialized successfully.")
+        logger.debug("PortAudio backend re-initialized.")
         return True
     except Exception as e:
         logger.error(f"Error re-initializing PortAudio backend: {e}")
