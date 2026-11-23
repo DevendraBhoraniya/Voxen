@@ -362,8 +362,9 @@ class WhisperTranscriber:
             self.last_raw_transcript = raw_transcript
             duration = time.time() - start_t
 
-            # Log raw Whisper output before vocabulary replacements, cleanup, or injection
-            logger.info(f"[RAW WHISPER OUTPUT] '{raw_transcript}'")
+            # Log raw Whisper output length at DEBUG (redacted: never log the
+            # actual transcript at INFO, which would persist dictated text).
+            logger.debug(f"[RAW WHISPER OUTPUT] {len(raw_transcript)} chars")
 
             # Collapse any 3+ repetition loops from Whisper
             deduped_transcript = collapse_repeats(raw_transcript)
@@ -371,9 +372,9 @@ class WhisperTranscriber:
             # Apply conservative vocabulary corrections for technical terms
             corrected_transcript, was_corrected = apply_vocabulary_corrections(deduped_transcript, self.corrections)
             if was_corrected:
-                logger.info(f"[VOCABULARY CORRECTION] '{raw_transcript}' -> '{corrected_transcript}'")
+                logger.debug(f"[VOCABULARY CORRECTION] {len(raw_transcript)} chars -> {len(corrected_transcript)} chars")
 
-            logger.info(f"Transcription completed in {duration:.2f}s: '{corrected_transcript}'")
+            logger.info(f"Transcription completed in {duration:.2f}s ({len(corrected_transcript)} chars)")
             return corrected_transcript, duration
 
         except Exception as e:

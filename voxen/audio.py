@@ -678,14 +678,15 @@ class AudioRecorder:
 
         is_silent = raw_rms < self.silence_threshold_energy
 
-        # Save temporary WAV for verification and playback
-        wav_path = "temp_last_capture.wav"
+        # Save the last take to AppData only. Never write to the current
+        # working directory: it may sync to OneDrive/Dropbox and expose
+        # dictated audio outside the machine.
+        appdata = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Voxen")
+        wav_path = os.path.join(appdata, "last.wav")
         try:
-            save_wav_file(normalized_audio, wav_path, 16000)
-            appdata = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Voxen")
             os.makedirs(appdata, exist_ok=True)
-            save_wav_file(normalized_audio, os.path.join(appdata, "last.wav"), 16000)
-            logger.info(f"Saved temporary capture to '{wav_path}' and '{appdata}\\last.wav'.")
+            save_wav_file(normalized_audio, wav_path, 16000)
+            logger.debug(f"Saved last take to {wav_path}.")
         except Exception as e:
             logger.warning(f"Could not save temporary WAV file: {e}")
 

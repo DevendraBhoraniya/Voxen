@@ -331,9 +331,9 @@ class SettingsWindow(QWidget):
 
         items = [
             ("Audio retention",
-             "Each successful take is written to temp_last_capture.wav (current "
-             "directory) and last.wav (%LOCALAPPDATA%\\Voxen). Only the most "
-             "recent take is kept. There is no automatic deletion."),
+             "The most recent take is written to last.wav (%LOCALAPPDATA%\\Voxen). "
+             "Audio is never written to the current working directory. Only the "
+             "most recent take is kept. There is no automatic deletion."),
             ("Logging",
              "A rotating log (3 x 2 MB) is written to %LOCALAPPDATA%\\Voxen\\logs. "
              "Raw transcripts are logged at INFO level."),
