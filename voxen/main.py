@@ -148,9 +148,10 @@ class VoxenApp(QObject):
     model_ready = Signal()
     model_load_failed = Signal(str)
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, config_path: str = "config.yaml"):
         super().__init__()
         self.config = config
+        self.config_path = config_path
         self._is_processing = False
         self._shutdown_event = threading.Event()
         self._lock = threading.Lock()
@@ -363,6 +364,7 @@ class VoxenApp(QObject):
             actual_dev = getattr(self.transcriber, "actual_device", "cpu").upper()
             self.tray.show_message("STT Model Changed", f"Active: {model_key} on {actual_dev}")
             logger.info(f"Switched model to: {model_key} on {actual_dev}")
+            app_config.save_config(self.config_path, self.config)
 
         except Exception as e:
             logger.error(f"Failed to switch model to {model_key}: {e}", exc_info=True)
@@ -372,22 +374,26 @@ class VoxenApp(QObject):
         self.config.setdefault("hotkey", {})["mode"] = mode
         self.hotkey_listener.set_mode(mode)
         logger.info(f"Dictation mode set to: {mode}")
+        app_config.save_config(self.config_path, self.config)
 
     def _on_device_changed(self, dev_idx):
         self.config.setdefault("audio", {})["device_index"] = dev_idx
         self.recorder.set_device(dev_idx)
         name = f"Device #{dev_idx}" if dev_idx is not None else "Default Device"
         self.tray.show_message("Microphone Changed", f"Active microphone: {name}")
+        app_config.save_config(self.config_path, self.config)
 
     def _on_cleanup_toggled(self, enabled: bool):
         self.config.setdefault("llm", {})["llama_cleanup"] = enabled
         status = "Enabled" if enabled else "Disabled"
         self.tray.show_message("Cleanup", f"Text refinement {status}.")
+        app_config.save_config(self.config_path, self.config)
 
     def _on_overlay_toggled(self, enabled: bool):
         self.config.setdefault("ui", {})["show_overlay"] = enabled
         if not enabled:
             self.overlay.hide_signal.emit()
+        app_config.save_config(self.config_path, self.config)
 
     def toggle_recording(self):
         """Toggle dictation state."""
@@ -529,7 +535,7 @@ class VoxenApp(QObject):
 
             # 3. Inject into focused window
             t_inject = time.time()
-            inj_cfg = self.config.get("injection", {})
+            inj_cfg = self.config.get("inject", {})
             injected = inject.inject_text(
                 final_text,
                 restore_delay_ms=inj_cfg.get("restore_delay_ms", 120),
@@ -588,7 +594,8 @@ def main():
     except Exception:
         pass
 
-    config = app_config.load_config("config.yaml")
+    config_path = "config.yaml"
+    config = app_config.load_config(config_path)
     run_first_run_diagnostics(config)
 
     app = QApplication(sys.argv)
@@ -601,7 +608,7 @@ def main():
     from PySide6.QtGui import QIcon
     app.setWindowIcon(QIcon(create_tray_icon_pixmap(recording=False)))
 
-    voxen = VoxenApp(config)
+    voxen = VoxenApp(config, config_path=config_path)
 
     logger.info("Voxen running. Press Ctrl+Shift to dictate.")
     sys.exit(app.exec())

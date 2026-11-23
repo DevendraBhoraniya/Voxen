@@ -1,7 +1,8 @@
-﻿"""Configuration loading and correction merging for Voxen."""
+﻿"""Configuration loading, validation, and atomic persistence for Voxen."""
 
 import logging
 import os
+import tempfile
 from typing import Dict
 
 import yaml
@@ -67,6 +68,22 @@ def _validate_config(data: Dict) -> Dict:
         except (TypeError, ValueError):
             llm["cleanup_threads"] = max(1, (os.cpu_count() or 4) // 2)
 
+    # inject section (clipboard save/paste/restore timing)
+    inject = data.get("inject")
+    if not isinstance(inject, dict):
+        inject = {}
+        data["inject"] = inject
+    if not isinstance(inject.get("restore_delay_ms", 120), int):
+        try:
+            inject["restore_delay_ms"] = int(inject.get("restore_delay_ms", 120))
+        except (TypeError, ValueError):
+            inject["restore_delay_ms"] = 120
+    if not isinstance(inject.get("post_paste_delay_ms", 40), int):
+        try:
+            inject["post_paste_delay_ms"] = int(inject.get("post_paste_delay_ms", 40))
+        except (TypeError, ValueError):
+            inject["post_paste_delay_ms"] = 40
+
     return data
 
 
@@ -100,3 +117,34 @@ def build_corrections(stt_cfg: Dict) -> Dict[str, str]:
         for k, v in replacements.items():
             merged[rf"(?i)\b{re.escape(str(k))}\b"] = str(v)
     return merged
+
+
+def save_config(path: str = "config.yaml", data: Dict = None) -> bool:
+    """
+    Atomically persist config to *path*.
+
+    Writes to a temp file in the same directory then os.replace(), so a crash
+    mid-write never leaves a partially-written config.yaml.
+    """
+    if data is None:
+        data = {}
+    abspath = os.path.abspath(path)
+    directory = os.path.dirname(abspath) or "."
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix="config.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
+        os.replace(tmp, abspath)
+        tmp = None
+        logger.debug(f"Saved config to {abspath}")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving config to {abspath}: {e}")
+        return False
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
